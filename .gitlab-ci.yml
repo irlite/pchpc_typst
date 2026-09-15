@@ -1,0 +1,41 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  TYPST_VERSION: "latest"
+
+default:
+  image: codeberg.org/ressler/typst-and-pipeline-essentials:${TYPST_VERSION}
+
+build:
+  stage: build
+  before_script:
+    - typst info
+    - mkdir -p ./public/$TYPST_VERSION
+  script:
+    - make build
+    - make example
+    - cp *.pdf ./public/$TYPST_VERSION
+  parallel:
+    matrix:
+      - TYPST_VERSION: ["0.14", "0.15"]
+  artifacts:
+    paths:
+      - ./public
+
+deploy:
+  stage: deploy
+  needs: ["build"]
+  script:
+    - cd ./public
+    - tree -H './' --noreport --charset utf-8 -P "*.pdf" > ./index.html
+    - sed -i 's|<a href="[^"]*/">\([^<]*\)</a>|<span>\1/</span>|g' index.html
+    - ls -lahR
+    - echo "Publishing contents of public/"
+  pages:
+    publish: ./public
+  rules:
+    # Only deploy on main branch
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
