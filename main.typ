@@ -1,11 +1,11 @@
-#import "/lib/thesis.typ": thesis
+#import "lib/thesis.typ": thesis
 
 #import "content/ai_usage.typ": ai_usage_list
 
 #thesis(
   config: (
     title: "Seismic Wave Forward Modelling",
-    author: "Maxim Barnstorf & Utkarsh something",
+    author: "Maxim Barnstorf & Utkarsh Pathak",
     date: none, // TODO: Insert datetime object
     firstsupervisor: "Patrick Höhn",
     secondsupervisor: "",
@@ -16,8 +16,9 @@
   ),
   chapters: (
     // once you have read it, you can comment out the template
-    include "content/template.typ",
-    // include "content/content.typ",
+    //include "content/template.typ",
+    include "content/01_introduction.typ",
+    include "content/02_background.typ"
   ),
   abstract: include "content/abstract.typ",
   declaration: include "content/declaration.typ",

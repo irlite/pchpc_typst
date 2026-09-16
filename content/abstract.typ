@@ -1,1 +1,8 @@
-Here comes the abstract... #lorem(50)
+#import "helpers.typ": *
+
+Seismic forward modelling predicts the wavefield that a source generates in a known subsurface model, and it is the inner loop of imaging and inversion workflows that run continuously in industrial and academic HPC centres. The cost is the problem. Simulating the elastic Marmousi2 model at its native 1.25 m spacing means updating 38.1 million grid points for 50 000 time steps, which
+takes 13 686 s, close to four hours, on a single core. Three dimensions and repeated shots make that entirely impractical.
+
+We implemented a hybrid parallel solver for the 2D elastic velocity-stress equations. The time-stepping kernels are C with OpenMP and SIMD pragmas, called through `ctypes` from a Python driver that handles setup, MPI communication and output. The grid is split across a two-dimensional Cartesian MPI topology with a one-cell halo, and the asymmetry of the staggered stencil lets each time step get away with two halo sweeps of two `Sendrecv` calls each. Each rank writes its own HDF5 file; a virtual dataset stitches them into one logical array afterwards, which avoids parallel HDF5 and avoids funnelling all output through rank 0.
+
+Measured on #tbd[scc-cpu], the runtime drops from 13 686 s sequential to 352 s on four nodes, a factor of 38.9. Scaling is far from ideal: parallel efficiency at 96 cores on one node is 0.17, and eight nodes are slower than four. Score-P traces explained the largest single loss. With the gzip HDF5 filter, compression accounted for 1118 s of a 2075 s run, more than the two physics kernels combined. Replacing gzip with Blosc-LZ4 cut the time for one wavefield write from 2.75 s to 0.22 s and the whole run from 2125 s to 1154 s. The remaining bottleneck is memory bandwidth: the kernels have an arithmetic intensity below 0.5 Flop/byte, so adding cores on one node buys much less than adding nodes.
