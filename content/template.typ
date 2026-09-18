@@ -1,32 +1,13 @@
 = Introduction
-Seismic wave forward modeling is the numerical simulation of how seismic waves
-propagate through a given earth model. It is used in applications ranging from
-earthquake hazard assessment and ground motion prediction to subsurface imaging
-in exploration geophysics. Concretely for inverse problems such as full waveform
-inversion and seismic tomography, where synthetic waveforms are compared against
-observed data to establish their validity.
+Seismic wave forward modeling is the numerical simulation of how seismic waves propagate through a given earth model. It is used in applications ranging from earthquake hazard assessment and ground motion prediction to subsurface imaging in exploration geophysics. It is also a core building block of inverse problems such as full waveform inversion and seismic tomography, where synthetic waveforms produced by forward modeling are compared against observed data to iteratively refine an estimate of the subsurface.
 
-Solving the elastodynamic wave equation numerically is most commonly done
-through discretization schemes such as the finite-difference method, in
-which the spatial and temporal derivatives of the equations are
-approximated on a regular grid. Accurately capturing the frequency content
-and spatial detail required for realistic wave propagation demands high
-computational power and, in particular, large amounts of memory. While the
-computation performed at each grid point is simple, many such points need
-to be updated over many iterations to satisfy the numerical stability
-conditions required to produce accurate results.
+Solving the elastodynamic wave equation numerically is most commonly done through discretization schemes such as the finite-difference method, in which the spatial and temporal derivatives of the equations are approximated on a grid. Accurately capturing the frequency content and spatial detail required for realistic wave propagation demands high computational power and, in particular, large amounts of memory. While the computation performed at each grid point is simple, many such points need to be updated over many iterations to satisfy the numerical stability conditions required to produce accurate results.
 
-As a result, researchers and industry participants rely on HPC datacenters
-and the tools available on them to perform these computations within a
-reasonable amount of time. In modern HPC, this largely comes down to
-parallelization frameworks such as OpenMP and MPI, which allow a developer
-to split the workload across multiple cores within a node and across
-multiple nodes in a cluster, respectively. Using both together makes it
-possible to scale a simulation well beyond what a single machine could
-handle, provided the workload is divided and coordinated correctly. This
-work examines how this can be applied concretely to the forward modeling
-problem described above, covering both the numerical scheme used and the
-parallelization strategy built around it.
+As a result, researchers and industry participants rely on HPC datacenters and the tools available on them to perform these computations within a reasonable amount of time. In modern HPC, this largely comes down to parallelization frameworks such as OpenMP and MPI, which allow a developer to split the workload across multiple cores within a node and across multiple nodes in a cluster, respectively. Using both together makes it possible to scale a simulation well beyond what a single machine could handle, provided the workload is divided and coordinated correctly.
+
+One major application of this kind of modeling that is commonly performed with parallelization is in the oil and gas industry. To characterize the subsurface and locate oil and gas reservoirs, pressure is generated at the surface, and the resulting waves traveling through the ground or water are recorded. From these measurements, an approximate model of the subsurface is constructed. Forward modeling is then run on that model to simulate the resulting wave propagation, and the outcome is compared against the actual measurements to assess how closely the model matches reality.
+
+To ground this in a concrete case, the numerical scheme and parallelization strategy examined in this work are applied to the Marmousi2 model, a widely used subsurface model derived from a profile of the North Quenguela trough in the Kwanza Basin, Angola. The goal of our computation is to visualize how a wave travels through this model, displaying the velocity of the medium resulting from a pressure wave injected at the surface.
 
 The remainder of this paper is structured as follows: we first describe
 the numerical scheme used for forward modeling and explain how it can be
@@ -34,20 +15,29 @@ implemented sequentially, after which we detail how the domain is
 decomposed and parallelized using MPI and OpenMP. We then present
 performance results obtained on an HPC cluster, examining how the
 implementation scales with an increasing number of processes and cores.
-Finally, we will discuss these results and potential future work    .
+Finally, we will discuss these results and potential future work.
 
 = Methodology
 
 == Physical and Numerical Model
 === Elastodynamic wave equation in velocity-stress formulation
+Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
-The propagation of seismic waves through an elastic medium is described by
-the elastodynamic wave equation. Rather than solving it in its standard
-second-order displacement form, we adopt the velocity-stress formulation,
-which recasts the problem as a system of coupled first-order partial
-differential equations in the particle velocities and the stress tensor
-components. For the two-dimensional P-SV case considered here, the system
-reads
+Computing this velocity field requires solving the elastic wave equation, and different numerical approaches exist for doing so, trading off complexity against accuracy. In this work, we use a second order accurate finite difference scheme.
+
+The Marmousi2 model provides the P-wave velocity $v_p$, the S-wave velocity $v_s$, and the mass density $rho$ at every point of a realistic, geologically structured subsurface model. From these three quantities, we ultimately want to compute the velocity components $v_x$ and $v_z$ and the stress components $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ at every grid point and every timestep. To do so, the elastic update equations additionally require the Lamé parameters $lambda$ and $mu$, which are not provided directly by the model but can be derived from $v_p$, $v_s$, and $rho$ using the isotropic elastic relations
+
+$ v_p = sqrt((lambda + 2mu) / rho), quad v_s = sqrt(mu / rho) $
+
+Solving the second equation for $mu$ gives
+
+$ mu = rho v_s^2 $
+
+Substituting this into the first equation and solving for $lambda$ gives
+
+$ lambda = rho v_p^2 - 2 mu $
+
+At each timestep, the stress and velocity variables are updated according to the following equations, which depend on the values at the previous timestep:
 
 $ (∂ v_x) / (∂ t) = 1/rho ((∂ sigma_(x x)) / (∂ x)
                           + (∂ sigma_(x z)) / (∂ z)) $
@@ -64,35 +54,130 @@ $ (∂ sigma_(z z)) / (∂ t) = lambda (∂ v_x) / (∂ x)
 $ (∂ sigma_(x z)) / (∂ t) = mu ((∂ v_x) / (∂ z)
                                + (∂ v_z) / (∂ x)) $
 
-Here, $v_x$ and $v_z$ denote the horizontal and vertical particle
-velocities, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are the normal
-and shear stress components, $rho$ is the mass density, and $lambda$ and
-$mu$ are the Lamé parameters. This formulation is well suited to numerical
-solution on a staggered grid, since it only involves first-order spatial
-derivatives, and it naturally separates the update of the velocity and
-stress fields into two distinct steps, which we exploit both in the
-sequential and parallel implementations described later.
+== Sequential Implementation
 
-=== Material parameters
+=== Spatial Staggering
 
-The medium is characterized by three spatially varying physical
-quantities: the P-wave velocity $v_p$, the S-wave velocity $v_s$, and the
-density $rho$. These are the quantities typically available from
-measured or modeled subsurface properties, rather than the Lamé
-parameters appearing directly in the wave equation. The Lamé parameters
-are therefore derived from $v_p$, $v_s$, and $rho$ using the standard
-relations
+The finite difference scheme used to update the velocity and stress fields is applied on a spatially staggered grid, commonly referred to as a Virieux grid. Rather than storing all five field components, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$, at the same physical location within a grid cell, each component is instead stored at a position offset by half a grid spacing relative to the others. Concretely, the normal stresses $sigma_(x x)$ and $sigma_(z z)$ are defined at integer grid points $(i, j)$, the horizontal velocity $v_x$ is defined half a cell to the side at $(i, j+1/2)$, the vertical velocity $v_z$ is defined half a cell below at $(i+1/2, j)$, and the shear stress $sigma_(x z)$ is defined half a cell in both directions at $(i+1/2, j+1/2)$.
+#figure(
+  box(width: 11cm, height: 8cm)[
+    #let cell = 2.5cm
+    #let pad = 1.5cm
+    #let r = 0.16cm
 
-$ mu = rho v_s^2 $
+    #let sxx-color = rgb("#3050a0")
+    #let vx-color = rgb("#c85a1e")
+    #let vz-color = rgb("#2a8a2a")
+    #let sxz-color = rgb("#8a2ab0")
 
-$ lambda = rho v_p^2 - 2 mu $
+    #let px(i) = pad + i * cell
+    #let py(j) = pad + j * cell
 
-with the combined modulus $lambda + 2 mu$ also precomputed, since it
-appears directly in the update equations for the normal stresses. In
-addition, the inverse density $1 slash rho$ is computed once ahead of
-time, since it is required at every velocity update and is more
-efficient to precompute than to divide by $rho$ at each grid point during
-every iteration.
+    // dashed grid lines connecting integer (stress) points
+    #for j in range(3) {
+      place(top + left, dx: px(0), dy: py(j),
+        line(start: (0cm, 0cm), end: (2 * cell, 0cm), stroke: (paint: gray, thickness: 0.6pt, dash: "dashed")))
+    }
+    #for i in range(3) {
+      place(top + left, dx: px(i), dy: py(0),
+        line(start: (0cm, 0cm), end: (0cm, 2 * cell), stroke: (paint: gray, thickness: 0.6pt, dash: "dashed")))
+    }
+
+    // sigma_xx, sigma_zz at integer points (i, j)
+    #for j in range(3) {
+      for i in range(3) {
+        place(top + left, dx: px(i) - r, dy: py(j) - r,
+          circle(radius: r, fill: sxx-color))
+      }
+    }
+
+    // v_x at (i, j + 1/2)
+    #for j in range(3) {
+      for i in range(2) {
+        place(top + left, dx: px(i) + cell / 2 - r, dy: py(j) - r,
+          circle(radius: r, fill: vx-color))
+      }
+    }
+
+    // v_z at (i + 1/2, j)
+    #for j in range(2) {
+      for i in range(3) {
+        place(top + left, dx: px(i) - r, dy: py(j) + cell / 2 - r,
+          circle(radius: r, fill: vz-color))
+      }
+    }
+
+    // sigma_xz at (i + 1/2, j + 1/2)
+    #for j in range(2) {
+      for i in range(2) {
+        place(top + left, dx: px(i) + cell / 2 - r, dy: py(j) + cell / 2 - r,
+          circle(radius: r, fill: sxz-color))
+      }
+    }
+
+    // field labels
+    #place(top + left, dx: px(1) + 0.25cm, dy: py(1) - 0.55cm,
+      text(size: 8pt, fill: sxx-color)[$sigma_(x x), sigma_(z z)$])
+    #place(top + left, dx: px(0) + cell / 2 - 0.35cm, dy: py(1) - 0.55cm,
+      text(size: 8pt, fill: vx-color)[$v_x$])
+    #place(top + left, dx: px(1) + 0.2cm, dy: py(0) + cell / 2 - 0.15cm,
+      text(size: 8pt, fill: vz-color)[$v_z$])
+    #place(top + left, dx: px(0) + cell / 2 + 0.2cm, dy: py(0) + cell / 2 - 0.15cm,
+      text(size: 8pt, fill: sxz-color)[$sigma_(x z)$])
+
+    // axis labels
+    //#place(top + left, dx: px(2) + 0.6cm, dy: py(0) - 0.15cm, text[$x$])
+    //#place(top + left, dx: px(0) - 0.15cm, dy: py(2) + 0.6cm, text[$z$])
+
+    // grid index annotation on the middle point instead of the corner
+    #place(top + left, dx: px(1) + 0.2cm, dy: py(1) + 0.15cm,
+      text(size: 8pt, fill: black)[$(i,j)$])
+    #place(top + left, dx: px(2) + 0.25cm, dy: py(2) - 5.00cm,
+      text(size: 8pt, fill: black)[$(i + 1,j + 1)$])
+  ],
+  caption: [
+    Layout of one unit cell of the staggered grid. The normal stresses
+    $sigma_(x x)$ and $sigma_(z z)$ are stored at integer grid points
+    $(i,j)$. The horizontal velocity $v_x$ is offset by half a grid
+    spacing along $x$, the vertical velocity $v_z$ is offset by half a
+    grid spacing along $z$, and the shear stress $sigma_(x z)$ is offset
+    by half a grid spacing in both directions.
+  ],
+) <fig:staggeredgrid>
+
+Placing the two fields on interleaved, offset grids means that whenever a derivative is needed, it is computed from the two nearest neighboring points on the opposite field's grid:
+- $v_x$ at $(i, j+1/2)$: needs $sigma_(x x)(i,j+1) - sigma_(x x)(i,j)$ and $sigma_(x z)(i+1\/2,j+1\/2) - sigma_(x z)(i-1\/2,j+1\/2)$
+
+- $v_z$ at $(i+1/2, j)$: needs $sigma_(x z)(i+1\/2,j+1\/2) - sigma_(x z)(i+1\/2,j-1\/2)$ and $sigma_(z z)(i+1,j) - sigma_(z z)(i,j)$
+
+- $sigma_(x x)$, $sigma_(z z)$ at $(i, j)$: need $v_x(i,j+1\/2) - v_x(i,j-1\/2)$ and $v_z(i+1\/2,j) - v_z(i-1\/2,j)$
+
+- $sigma_(x z)$ at $(i+1/2, j+1/2)$: needs $v_x (i+1,j+1\/2) - v_x (i,j+1\/2)$ and $v_z (i+1\/2,j+1) - v_z (i+1\/2,j)$
+This improves accuracy by a factor of four at the same grid spacing. The error of a centered difference shrinks with the square of the distance between the two points it uses. On the staggered grid these two points are only half a grid spacing apart, $Delta \/ 2$, while on a collocated grid they would be a full grid spacing apart, $Delta$. Squaring this halved distance is what produces the improvement: $(Delta\/2)^2 = Delta^2 \/ 4$, so the error is four times smaller for the same $Delta$.
+
+A collocated grid matching the staggered grid's accuracy would therefore need roughly four times as many grid points overall, and correspondingly about four times the memory and four times the compute per timestep.
+
+In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
+
+Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point:
+
+```c
+dvx_dx = (vx[i][j+1] - vx[i][j]) / dx;
+dvz_dz = (vz[i+1][j] - vz[i][j]) / dz;
+```
+
+while the velocity update reads stress one index behind, a backward difference, since the stress powering $v_x$ conceptually sits half a cell before the current point:
+
+```c
+dsxx_dx = (sxx[i][j] - sxx[i][j-1]) / dx;
+dsxz_dz = (sxz[i][j] - sxz[i-1][j]) / dz;
+```
+
+Both kernels perform an ordinary two point finite difference over array indices that are one full array step apart, but because one kernel always looks forward and the other always looks backward, the effective location each result represents is shifted by half a grid spacing relative to its input without ever needing to track fractional indices.
+
+=== Temporal Staggering
+
+In addition to being staggered in space, the scheme is also staggered in time. Rather than updating stress and velocity from a single shared snapshot of the fields, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme. It makes the computation second order accurate in time as well.
 
 == Parallelization
 === Parallelization Coverage
@@ -319,6 +404,52 @@ When a neighboring rank does not exist because a rank lies on the edge of the gl
 == Parallel Performance
 === Strong Scaling
 === Weak Scaling
+
+When testing weak scaling, the problem size is adjusted in proportion to the compute resources used. How the problem size is adjusted in this case has been detailed in the implementation section. As with strong scaling, weak scaling was again evaluated separately for single node and multi node runs.
+
+*Weak Scaling Single Node*
+#figure(
+  table(
+    columns: 4,
+    align: center,
+    stroke: 0.5pt,
+    [*Cores*], [*Exact ds*], [*Used ds*], [*Deviation in problem size per core*],
+    [1],  [39.00], [39], [0.00 %],
+    [16], [9.75],  [10], [−4.94 %],
+    [32], [6.89],  [7],  [−3.00 %],
+    [64], [4.88],  [5],  [−4.94 %],
+    [96], [3.98],  [4],  [−0.96 %],
+  ),
+  caption: [
+    Deviation from ideal weak scaling caused by rounding the downsampling
+    factor $"ds"$ to the nearest integer, for the core counts used in this
+    work. A negative deviation indicates that slightly less work per core
+    was performed than the ideal weak scaling target.
+  ],
+) <tab:weakscale-dev-low>
+
+=== Weak Scaling Multi Node
+
+Figure X displays the
+
+#figure(
+  table(
+    columns: 4,
+    align: center,
+    stroke: 0.5pt,
+    [*Cores*], [*Exact ds*], [*Used ds*], [*Deviation in problem size per core*],
+    [64],  [5.875], [6], [−4.12 %],
+    [128], [4.155], [4], [+7.89 %],
+    [256], [2.938], [3], [−4.12 %],
+    [512], [2.078], [2], [+7.89 %],
+  ),
+  caption: [
+    Deviation from ideal weak scaling using $"BASE_DS" = 47$ instead of
+    $39$, for the core counts used in the multi-node scaling series.
+  ],
+) <tab:weakscale-dev-high-47>
+
+
 === Compression Method Comparison
 
 As detailed in the parallelization section, Blosc has been used to parallelize the compression step. Without this, waiting for rank 0 to finish compressing the output on its own was the dominant bottleneck. This bottleneck is examined further in the Vampir section. In addition to parallelizing the compression itself, we also switched from gzip to lz4 as the underlying compression algorithm, since lz4 is substantially faster while still providing a useful reduction in output size.
