@@ -17,10 +17,9 @@ performance results obtained on an HPC cluster, examining how the
 implementation scales with an increasing number of processes and cores.
 Finally, we will discuss these results and potential future work.
 
-= Methodology
-
-== Physical and Numerical Model
-=== Elastodynamic wave equation in velocity-stress formulation
+= Background
+== Marmousi2 Model
+== Elastodynamic wave equation in velocity-stress formulation
 Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
 Computing this velocity field requires solving the elastic wave equation, and different numerical approaches exist for doing so, trading off complexity against accuracy. In this work, we use a second order accurate finite difference scheme.
@@ -53,8 +52,15 @@ $ (∂ sigma_(z z)) / (∂ t) = lambda (∂ v_x) / (∂ x)
 
 $ (∂ sigma_(x z)) / (∂ t) = mu ((∂ v_x) / (∂ z)
                                + (∂ v_z) / (∂ x)) $
+== Staggering
+=== Concept and Terminology
+To increase the accuracy of the computation, staggering is applied. Staggering refers to deliberately storing or updating different quantities at offset positions, rather than at the same point, whether that offset is in space or in time. The two staggered quantities are never evaluated at exactly the same location, but each is placed exactly halfway between two locations of the other. As shown below, this offset is what allows the finite differences used to update each field to reach second order accuracy without requiring a wider stencil  .
 
-== Sequential Implementation
+=== Second order accuracy
+
+Any time a continuous derivative is approximated using a finite difference, some error is introduced, since the approximation only uses a finite number of nearby values instead of the true, continuous function. The order of accuracy describes how quickly this error shrinks as the discretization is refined, that is, as the grid spacing $Delta$ or timestep $"dt"$ is made smaller. A first order accurate scheme has an error that shrinks proportionally to $Delta$ itself. Halving the spacing only halves the error. A second order accurate scheme has an error that shrinks proportionally to $Delta^2$. Halving the spacing quarters the error. This means that for a small refinement, a second order scheme becomes accurate much faster than a first order one, since its error decreases quadratically rather than linearly as the discretization is refined.
+
+This distinction matters in practice because it directly affects how fine a grid or timestep is needed to reach a given accuracy target. A first order scheme generally requires a much finer discretization, and correspondingly far more computation, to reach the same accuracy as a second order scheme. Both the spatial and temporal staggering described below are specifically what allow the finite difference scheme used in this work to achieve second order accuracy, rather than being limited to first order, without requiring a wider, more expensive stencil.
 
 === Spatial Staggering
 
@@ -150,13 +156,9 @@ Placing the two fields on interleaved, offset grids means that whenever a deriva
 
 - $v_z$ at $(i+1/2, j)$: needs $sigma_(x z)(i+1\/2,j+1\/2) - sigma_(x z)(i+1\/2,j-1\/2)$ and $sigma_(z z)(i+1,j) - sigma_(z z)(i,j)$
 
-- $sigma_(x x)$, $sigma_(z z)$ at $(i, j)$: need $v_x(i,j+1\/2) - v_x(i,j-1\/2)$ and $v_z(i+1\/2,j) - v_z(i-1\/2,j)$
+- $sigma_(x x)$, $sigma_(z z)$ at $(i, j)$: need $v_x (i,j+1\/2) - v_x (i,j-1\/2)$ and $v_z (i+1\/2,j) - v_z (i-1\/2,j)$
 
 - $sigma_(x z)$ at $(i+1/2, j+1/2)$: needs $v_x (i+1,j+1\/2) - v_x (i,j+1\/2)$ and $v_z (i+1\/2,j+1) - v_z (i+1\/2,j)$
-This improves accuracy by a factor of four at the same grid spacing. The error of a centered difference shrinks with the square of the distance between the two points it uses. On the staggered grid these two points are only half a grid spacing apart, $Delta \/ 2$, while on a collocated grid they would be a full grid spacing apart, $Delta$. Squaring this halved distance is what produces the improvement: $(Delta\/2)^2 = Delta^2 \/ 4$, so the error is four times smaller for the same $Delta$.
-
-A collocated grid matching the staggered grid's accuracy would therefore need roughly four times as many grid points overall, and correspondingly about four times the memory and four times the compute per timestep.
-
 In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
 
 Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point:
@@ -177,9 +179,12 @@ Both kernels perform an ordinary two point finite difference over array indices 
 
 === Temporal Staggering
 
-In addition to being staggered in space, the scheme is also staggered in time. Rather than updating stress and velocity from a single shared snapshot of the fields, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme. It makes the computation second order accurate in time as well.
+In addition to being staggered in space, the scheme is also staggered in time. Rather than updating stress and velocity from a single shared snapshot of the fields, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme, and it makes the computation second order accurate in time.
 
-== Parallelization
+= Implementation
+== Sequential
+
+== Parallel
 === Parallelization Coverage
 
 *What was not parallelized*
@@ -428,7 +433,7 @@ When testing weak scaling, the problem size is adjusted in proportion to the com
   ],
 ) <tab:weakscale-dev-low>
 
-=== Weak Scaling Multi Node
+*Weak Scaling Multi Node*
 
 Figure X displays the
 
@@ -450,7 +455,9 @@ Figure X displays the
 ) <tab:weakscale-dev-high-47>
 
 
-=== Compression Method Comparison
+=== Threads per Rank
+=== OpenMP Approaches
+=== Compression Approaches
 
 As detailed in the parallelization section, Blosc has been used to parallelize the compression step. Without this, waiting for rank 0 to finish compressing the output on its own was the dominant bottleneck. This bottleneck is examined further in the Vampir section. In addition to parallelizing the compression itself, we also switched from gzip to lz4 as the underlying compression algorithm, since lz4 is substantially faster while still providing a useful reduction in output size.
 
@@ -467,4 +474,8 @@ As detailed in the parallelization section, Blosc has been used to parallelize t
 
 Without compression, the output totals 70GB, compared to 34GB when using lz4. Despite the runtime cost of compression, this reduction in output size can be considered worthwhile, and this will matter even more once the simulation is scaled to 3D, where the volume of output data grows substantially.
 
-=== Trace Based Analysis with Vampir
+== Trace Based Analysis with Vampir
+= Discussion
+== Analysis & Bottleneck
+== Improvements
+== Future Work
