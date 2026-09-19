@@ -408,52 +408,16 @@ When a neighboring rank does not exist because a rank lies on the edge of the gl
 === Runtime Breakdown by Program Phase
 == Parallel Performance
 === Strong Scaling
+*Strong Scaling Single Node*
+
+*Strong Scaling Multi Node*
 === Weak Scaling
 
 When testing weak scaling, the problem size is adjusted in proportion to the compute resources used. How the problem size is adjusted in this case has been detailed in the implementation section. As with strong scaling, weak scaling was again evaluated separately for single node and multi node runs.
 
 *Weak Scaling Single Node*
-#figure(
-  table(
-    columns: 4,
-    align: center,
-    stroke: 0.5pt,
-    [*Cores*], [*Exact ds*], [*Used ds*], [*Deviation in problem size per core*],
-    [1],  [39.00], [39], [0.00 %],
-    [16], [9.75],  [10], [−4.94 %],
-    [32], [6.89],  [7],  [−3.00 %],
-    [64], [4.88],  [5],  [−4.94 %],
-    [96], [3.98],  [4],  [−0.96 %],
-  ),
-  caption: [
-    Deviation from ideal weak scaling caused by rounding the downsampling
-    factor $"ds"$ to the nearest integer, for the core counts used in this
-    work. A negative deviation indicates that slightly less work per core
-    was performed than the ideal weak scaling target.
-  ],
-) <tab:weakscale-dev-low>
 
 *Weak Scaling Multi Node*
-
-Figure X displays the
-
-#figure(
-  table(
-    columns: 4,
-    align: center,
-    stroke: 0.5pt,
-    [*Cores*], [*Exact ds*], [*Used ds*], [*Deviation in problem size per core*],
-    [64],  [5.875], [6], [−4.12 %],
-    [128], [4.155], [4], [+7.89 %],
-    [256], [2.938], [3], [−4.12 %],
-    [512], [2.078], [2], [+7.89 %],
-  ),
-  caption: [
-    Deviation from ideal weak scaling using $"BASE_DS" = 47$ instead of
-    $39$, for the core counts used in the multi-node scaling series.
-  ],
-) <tab:weakscale-dev-high-47>
-
 
 === Threads per Rank
 === OpenMP Approaches
@@ -476,6 +440,17 @@ Without compression, the output totals 70GB, compared to 34GB when using lz4. De
 
 == Trace Based Analysis with Vampir
 = Discussion
-== Analysis & Bottleneck
+== Analysis and Bottleneck
+
+The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took [x1] seconds. The fastest parallel run, using 4 nodes with 64 cores each ([x2] total cores), took [x3] seconds. This is a speedup of [x4]x, which is a significant improvement, but only a fraction of the [x5]x increase in compute resources used, corresponding to a parallel efficiency of [x6]%. A noticeably more efficient configuration was the 4-node, 16-core-per-node run, which took [x7] seconds and achieved [x8]% efficiency.
+
+What stands out is how poor the single node scaling was, particularly in comparison to the efficiency of inter-node parallelization using MPI. The most likely explanation is that memory bandwidth becomes saturated once enough OpenMP threads are placed on a single CPU. Each timestep requires reading and writing all five field arrays, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$, together with the five precomputed material property arrays, for every grid point, regardless of how much of that data is ultimately written to disk. This amounts to roughly [x9] bytes of memory traffic per grid point per iteration, or approximately [x10] GB in total over the full run, which [is / is not] consistent with saturating the node's peak memory bandwidth of [x11] GB/s. Since all OpenMP threads on a single node share the same memory bus, increasing the thread count beyond a certain point no longer increases throughput once this bandwidth limit is reached, whereas MPI ranks on separate nodes each have access to their own independent memory bandwidth, which is why multi node scaling continued to yield efficiency gains where single node scaling did not.
 == Improvements
-== Future Work
+
+While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, several further improvements were identified over the course of this project that were not implemented yet.
+
+*GPU acceleration.* In real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps naturally onto the thousands of lightweight threads a GPU provides. The bottleneck identified in this work was memory bandwidth rather than arithmetic throughput, and GPUs typically offer severalfold higher memory bandwidth than a CPU socket.
+
+*Communication and computation overlap.* As discussed in the parallelization section, the current implementation performs a blocking halo exchange before each kernel call. Splitting each rank's subdomain into an interior region, which does not depend on data from neighboring ranks, and a thin boundary region, which does, would allow the interior to be computed using non blocking MPI calls while the halo exchange for the boundary is still in flight. This was partially explored in the interior and boundary tiling scheme described earlier, but extending it to fully overlap communication with computation was not pursued further, since the expected gain is bounded by the fraction of runtime spent on communication latency, which appeared to be small relative to the memory bandwidth cost of the kernels themselves.
+
+*Higher order accurate schemes.* The scheme used in this work is second order accurate in both space and time, achieved through spatial and temporal staggering. Higher order finite difference schemes, for example fourth or eighth order accurate in space, are commonly used in production seismic modeling codes, since they allow a coarser grid to be used for the same accuracy, directly reducing both memory footprint and computation. While this could have been done, this improvement is not related to parallelization so it was not the focus of this project.
