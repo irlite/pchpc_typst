@@ -53,7 +53,6 @@ $ (∂ sigma_(z z)) / (∂ t) = lambda (∂ v_x) / (∂ x)
 $ (∂ sigma_(x z)) / (∂ t) = mu ((∂ v_x) / (∂ z)
                                + (∂ v_z) / (∂ x)) $
 == Staggering
-=== Concept and Terminology
 To increase the accuracy of the computation, staggering is applied. Staggering refers to deliberately storing or updating different quantities at offset positions, rather than at the same point, whether that offset is in space or in time. The two staggered quantities are never evaluated at exactly the same location, but each is placed exactly halfway between two locations of the other. As shown below, this offset is what allows the finite differences used to update each field to reach second order accuracy without requiring a wider stencil  .
 
 === Second order accuracy
@@ -71,94 +70,311 @@ The finite difference scheme used to update the velocity and stress fields is ap
     #let pad = 1.5cm
     #let r = 0.16cm
 
+    // Field colors.
     #let sxx-color = rgb("#3050a0")
     #let vx-color = rgb("#c85a1e")
     #let vz-color = rgb("#2a8a2a")
     #let sxz-color = rgb("#8a2ab0")
 
+    // Integer grid-point coordinates.
     #let px(i) = pad + i * cell
     #let py(j) = pad + j * cell
 
-    // dashed grid lines connecting integer (stress) points
+    // Dashed horizontal grid lines.
     #for j in range(3) {
-      place(top + left, dx: px(0), dy: py(j),
-        line(start: (0cm, 0cm), end: (2 * cell, 0cm), stroke: (paint: gray, thickness: 0.6pt, dash: "dashed")))
+      place(
+        top + left,
+        dx: px(0),
+        dy: py(j),
+        line(
+          start: (0cm, 0cm),
+          end: (2 * cell, 0cm),
+          stroke: (
+            paint: gray,
+            thickness: 0.6pt,
+            dash: "dashed",
+          ),
+        ),
+      )
     }
+
+    // Dashed vertical grid lines.
     #for i in range(3) {
-      place(top + left, dx: px(i), dy: py(0),
-        line(start: (0cm, 0cm), end: (0cm, 2 * cell), stroke: (paint: gray, thickness: 0.6pt, dash: "dashed")))
+      place(
+        top + left,
+        dx: px(i),
+        dy: py(0),
+        line(
+          start: (0cm, 0cm),
+          end: (0cm, 2 * cell),
+          stroke: (
+            paint: gray,
+            thickness: 0.6pt,
+            dash: "dashed",
+          ),
+        ),
+      )
     }
 
-    // sigma_xx, sigma_zz at integer points (i, j)
+    // Normal stresses sigma_xx and sigma_zz
+    // at integer grid points.
     #for j in range(3) {
       for i in range(3) {
-        place(top + left, dx: px(i) - r, dy: py(j) - r,
-          circle(radius: r, fill: sxx-color))
+        place(
+          top + left,
+          dx: px(i) - r,
+          dy: py(j) - r,
+          circle(
+            radius: r,
+            fill: sxx-color,
+          ),
+        )
       }
     }
 
-    // v_x at (i, j + 1/2)
+    // Horizontal velocity v_x
+    // at horizontally staggered points.
     #for j in range(3) {
       for i in range(2) {
-        place(top + left, dx: px(i) + cell / 2 - r, dy: py(j) - r,
-          circle(radius: r, fill: vx-color))
+        place(
+          top + left,
+          dx: px(i) + cell / 2 - r,
+          dy: py(j) - r,
+          circle(
+            radius: r,
+            fill: vx-color,
+          ),
+        )
       }
     }
 
-    // v_z at (i + 1/2, j)
+    // Vertical velocity v_z
+    // at vertically staggered points.
     #for j in range(2) {
       for i in range(3) {
-        place(top + left, dx: px(i) - r, dy: py(j) + cell / 2 - r,
-          circle(radius: r, fill: vz-color))
+        place(
+          top + left,
+          dx: px(i) - r,
+          dy: py(j) + cell / 2 - r,
+          circle(
+            radius: r,
+            fill: vz-color,
+          ),
+        )
       }
     }
 
-    // sigma_xz at (i + 1/2, j + 1/2)
+    // Shear stress sigma_xz
+    // at points staggered in both directions.
     #for j in range(2) {
       for i in range(2) {
-        place(top + left, dx: px(i) + cell / 2 - r, dy: py(j) + cell / 2 - r,
-          circle(radius: r, fill: sxz-color))
+        place(
+          top + left,
+          dx: px(i) + cell / 2 - r,
+          dy: py(j) + cell / 2 - r,
+          circle(
+            radius: r,
+            fill: sxz-color,
+          ),
+        )
       }
     }
 
-    // field labels
-    #place(top + left, dx: px(1) + 0.25cm, dy: py(1) - 0.55cm,
-      text(size: 8pt, fill: sxx-color)[$sigma_(x x), sigma_(z z)$])
-    #place(top + left, dx: px(0) + cell / 2 - 0.35cm, dy: py(1) - 0.55cm,
-      text(size: 8pt, fill: vx-color)[$v_x$])
-    #place(top + left, dx: px(1) + 0.2cm, dy: py(0) + cell / 2 - 0.15cm,
-      text(size: 8pt, fill: vz-color)[$v_z$])
-    #place(top + left, dx: px(0) + cell / 2 + 0.2cm, dy: py(0) + cell / 2 - 0.15cm,
-      text(size: 8pt, fill: sxz-color)[$sigma_(x z)$])
+    // Place a coordinate label at the top-right
+    // of an integer grid point.
+    #let coordinate-label(x, y, label) = {
+      place(
+        top + left,
+        dx: x + 0.18cm,
+        dy: y - 0.42cm,
+        text(
+          size: 7pt,
+          fill: black,
+          label,
+        ),
+      )
+    }
 
-    // axis labels
-    //#place(top + left, dx: px(2) + 0.6cm, dy: py(0) - 0.15cm, text[$x$])
-    //#place(top + left, dx: px(0) - 0.15cm, dy: py(2) + 0.6cm, text[$z$])
+    // Top row.
+    #coordinate-label(
+      px(0),
+      py(0),
+      [$(i - 1, j + 1)$],
+    )
 
-    // grid index annotation on the middle point instead of the corner
-    #place(top + left, dx: px(1) + 0.2cm, dy: py(1) + 0.15cm,
-      text(size: 8pt, fill: black)[$(i,j)$])
-    #place(top + left, dx: px(2) + 0.25cm, dy: py(2) - 5.00cm,
-      text(size: 8pt, fill: black)[$(i + 1,j + 1)$])
+    #coordinate-label(
+      px(1),
+      py(0),
+      [$(i, j + 1)$],
+    )
+
+    #coordinate-label(
+      px(2),
+      py(0),
+      [$(i + 1, j + 1)$],
+    )
+
+    // Middle row.
+    #coordinate-label(
+      px(0),
+      py(1),
+      [$(i - 1, j)$],
+    )
+
+    #coordinate-label(
+      px(1),
+      py(1),
+      [$(i, j)$],
+    )
+
+    #coordinate-label(
+      px(2),
+      py(1),
+      [$(i + 1, j)$],
+    )
+
+    // Bottom row.
+    #coordinate-label(
+      px(0),
+      py(2),
+      [$(i - 1, j - 1)$],
+    )
+
+    #coordinate-label(
+      px(1),
+      py(2),
+      [$(i, j - 1)$],
+    )
+
+    #coordinate-label(
+      px(2),
+      py(2),
+      [$(i + 1, j - 1)$],
+    )
+
+    // Framed legend.
+    #let legend-x = px(2) + 2.3cm
+    #let legend-y = py(0) + 0.6cm
+
+    #place(
+      top + left,
+      dx: legend-x,
+      dy: legend-y,
+      box(
+        inset: 0.25cm,
+        stroke: 0.7pt + gray,
+        radius: 3pt,
+        fill: white,
+      )[
+        #stack(
+          dir: ttb,
+          spacing: 0.2cm,
+
+          text(
+            size: 9pt,
+            weight: "bold",
+          )[Fields],
+
+          grid(
+            columns: (0.4cm, auto),
+            column-gutter: 0.12cm,
+            row-gutter: 0.22cm,
+            align: left,
+
+            // Normal stresses.
+            align(center)[
+              #circle(
+                radius: r,
+                fill: sxx-color,
+              )
+            ],
+            text(
+              size: 8pt,
+              fill: sxx-color,
+            )[
+              $sigma_(x x), sigma_(z z)$
+            ],
+
+            // Horizontal velocity.
+            align(center)[
+              #circle(
+                radius: r,
+                fill: vx-color,
+              )
+            ],
+            text(
+              size: 8pt,
+              fill: vx-color,
+            )[
+              $v_x$
+            ],
+
+            // Vertical velocity.
+            align(center)[
+              #circle(
+                radius: r,
+                fill: vz-color,
+              )
+            ],
+            text(
+              size: 8pt,
+              fill: vz-color,
+            )[
+              $v_z$
+            ],
+
+            // Shear stress.
+            align(center)[
+              #circle(
+                radius: r,
+                fill: sxz-color,
+              )
+            ],
+            text(
+              size: 8pt,
+              fill: sxz-color,
+            )[
+              $sigma_(x z)$
+            ],
+          ),
+        )
+      ],
+    )
   ],
   caption: [
-    Layout of one unit cell of the staggered grid. The normal stresses
-    $sigma_(x x)$ and $sigma_(z z)$ are stored at integer grid points
-    $(i,j)$. The horizontal velocity $v_x$ is offset by half a grid
-    spacing along $x$, the vertical velocity $v_z$ is offset by half a
-    grid spacing along $z$, and the shear stress $sigma_(x z)$ is offset
-    by half a grid spacing in both directions.
+    Layout of a portion of the staggered grid. The normal stresses
+    $sigma_(x x)$ and $sigma_(z z)$ are stored at integer grid points.
+    The horizontal velocity $v_x$ is offset by half a grid spacing along
+    $x$, the vertical velocity $v_z$ is offset by half a grid spacing
+    along $z$, and the shear stress $sigma_(x z)$ is offset by half a
+    grid spacing in both directions.
   ],
 ) <fig:staggeredgrid>
 
 Placing the two fields on interleaved, offset grids means that whenever a derivative is needed, it is computed from the two nearest neighboring points on the opposite field's grid:
-- $v_x$ at $(i, j+1/2)$: needs $sigma_(x x)(i,j+1) - sigma_(x x)(i,j)$ and $sigma_(x z)(i+1\/2,j+1\/2) - sigma_(x z)(i-1\/2,j+1\/2)$
+- $v_x$ at $(i, j + 1/2)$: needs
+  $sigma_(x x)(i, j + 1)$,#h(0.4em)
+  $sigma_(x x)(i, j)$,#h(0.4em)
+  $sigma_(x z)(i + 1/2, j + 1/2)$,#h(0.4em)
+  $sigma_(x z)(i - 1/2, j + 1/2)$.
 
-- $v_z$ at $(i+1/2, j)$: needs $sigma_(x z)(i+1\/2,j+1\/2) - sigma_(x z)(i+1\/2,j-1\/2)$ and $sigma_(z z)(i+1,j) - sigma_(z z)(i,j)$
+- $v_z$ at $(i + 1/2, j)$: needs
+  $sigma_(x z)(i + 1/2, j + 1/2)$,#h(0.4em)
+  $sigma_(x z)(i + 1/2, j - 1/2)$,#h(0.4em)
+  $sigma_(z z)(i + 1, j)$,#h(0.4em)
+  $sigma_(z z)(i, j)$.
 
-- $sigma_(x x)$, $sigma_(z z)$ at $(i, j)$: need $v_x (i,j+1\/2) - v_x (i,j-1\/2)$ and $v_z (i+1\/2,j) - v_z (i-1\/2,j)$
+- $sigma_(x x)$ and $sigma_(z z)$ at $(i, j)$: need
+  $v_x (i, j + 1/2)$,#h(0.4em)
+  $v_x (i, j - 1/2)$,#h(0.4em)
+  $v_z (i + 1/2, j)$,#h(0.4em)
+  $v_z (i - 1/2, j)$.
 
-- $sigma_(x z)$ at $(i+1/2, j+1/2)$: needs $v_x (i+1,j+1\/2) - v_x (i,j+1\/2)$ and $v_z (i+1\/2,j+1) - v_z (i+1\/2,j)$
+- $sigma_(x z)$ at $(i + 1/2, j + 1/2)$: needs
+  $v_x (i + 1, j + 1/2)$,#h(0.4em)
+  $v_x (i, j + 1/2)$,#h(0.4em)
+  $v_z (i + 1/2, j + 1)$,#h(0.4em)
+  $v_z (i + 1/2, j)$.
 In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
 
 Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point:
@@ -454,3 +670,5 @@ While the parallelization strategy presented in this work achieves substantial s
 *Communication and computation overlap.* As discussed in the parallelization section, the current implementation performs a blocking halo exchange before each kernel call. Splitting each rank's subdomain into an interior region, which does not depend on data from neighboring ranks, and a thin boundary region, which does, would allow the interior to be computed using non blocking MPI#cite(<Forum1994MPIAM>) calls while the halo exchange for the boundary is still in flight. This was partially explored in the interior and boundary tiling scheme described earlier, but extending it to fully overlap communication with computation was not pursued further, since the expected gain is bounded by the fraction of runtime spent on communication latency, which appeared to be small relative to the memory bandwidth cost of the kernels themselves.
 
 *Higher order accurate schemes.* The scheme used in this work is second order accurate in both space and time, achieved through spatial and temporal staggering. Higher order finite difference schemes, for example fourth or eighth order accurate in space, are commonly used in production seismic modeling codes, since they allow a coarser grid to be used for the same accuracy, directly reducing both memory footprint and computation. While this could have been done, this improvement is not related to parallelization so it was not the focus of this project.
+
+= Conclusion
