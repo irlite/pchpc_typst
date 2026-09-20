@@ -19,6 +19,48 @@ Finally, we will discuss these results and potential future work.
 
 = Background
 == Marmousi2 Model
+
+Marmousi2 is an upgraded version of the 1988 Marmousi model, which increased the models width, depth and made it fully elastic by adding S-wave velocity field. The structure of the Marmousi model comes from the North Quenguela Trough in the Quanza Basin of Angola. This region comprises of mostly shale with some layers of sand, a marl anticline inside a faulted zone and a evacuated salt layer and hydrocarbon traps in  the centre #cite(<martin2006>)  #cite(<versteeg1994>). Martin and his coleagues increased the width of the model from 9.2 km to 17 km. They also added 41 horizons to reach 199 and gave it a S-wave velocity field so that we have shear information. They also added a 450 meter water layer on the top to represent a deep-water setting.
+
+We chose it for three reasons. It is a standard benchmark, so we can find other published numbers to compare our results. It is elastic so we can work with five fields instead, thus increasing the memory per data point. And at full resolution it is big enough that a parlllel run is worth while. 
+
+The SEG open data collection #cite(<segopendata>) distributes the dataset as three SEG-Y files each holding $v_p$, $v_s$ and $rho$ on a 1.25 m grid, which `segyio` reads directly.
+
+$v_p$, $v_s$ and $rho$ on a 1.25 m grid, which `segyio` reads directly.
+
+#figure(
+  table(
+    columns: (auto, auto),
+    align: (left, right),
+    stroke: none,
+    inset: (x: 7pt, y: 4.5pt),
+
+    table.hline(stroke: 0.9pt),
+    table.header([*Quantity*], [*Value*]),
+    table.hline(stroke: 0.5pt),
+
+    [Physical grid $n_(z_0) times n_(x_0)$], [$2801 times 13601$],
+    [Physical grid points], [38 095 201],
+    [Grid spacing $Delta x = Delta z$], [1.25 m],
+    [Model extent (horizontal $times$ depth)], [17.0 km $times$ 3.5 km],
+    [Sponge layer width $n_b$], [240 cells],
+    [Padded grid $n_z times n_x$], [$3281 times 14081$],
+    [Padded grid points], [46 199 761],
+    [Fields per point (5 wave, 5 material)], [10],
+    [Wavefield and material memory], [1.85 GB],
+    [Time steps], [50 000],
+    [Source peak frequency $f_0$], [8 Hz],
+    [Snapshot interval], [every 100 steps],
+    [Snapshots written], [500],
+
+    table.hline(stroke: 0.9pt),
+  ),
+  caption: [
+    Properties of the Marmousi2 model and the simulation grid at downsampling
+    factor $s = 1$.
+  ],
+) <tab-model>
+
 == Elastodynamic wave equation in velocity-stress formulation
 Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
