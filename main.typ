@@ -5,7 +5,7 @@
 #thesis(
   config: (
     title: "Seismic Wave Forward Modelling",
-    author: "Maxim Barnstorf & Utkarsh something",
+    author: "Maxim Barnstorf & Utkarsh Pathak",
     date: none, // TODO: Insert datetime object
     firstsupervisor: "Patrick Höhn",
     secondsupervisor: "",
