@@ -446,6 +446,68 @@ To remove this bottleneck, this work applies tiling. When using tiling, the grid
 
 == Sequential Design
 
+
+Every speedup in this report is measured against the sequential solver. It solves the same equations on the same grid with the same boundary treatment as the parallel version, and it writes the same output: the vertical particle velocity $v_z$, saved every hundredth step. Its inner loops are compiled C rather than interpreted Python, so it is a fair point of comparison rather than an artificially slow one.
+
+=== Structure of the program
+
+
+@seq-pseudo-code gives the solver in full. Setup runs once: it reads the model, derives the arrays the kernels need, and prepares the output file. The time loop then repeats four operations fifty thousand times. Everything else in this chapter and in @sec-seq-impl expands one part of this listing.
+
+#figure(
+  ```c
+  SETUP (once)
+      read vp, vs, rho from three SEG-Y files, downsampling by s
+      pad each field by nb cells, replicating the outermost row or column
+      mu      <- rho * vs^2
+      lambda  <- rho * vp^2 - 2*mu
+      lam2mu  <- lambda + 2*mu
+      inv_rho <- 1 / rho
+      damp    <- quadratic sponge ramp on all four sides
+      dt      <- 0.4 * dx / max(vp)
+      allocate vx, vz, sxx, szz, sxz as zero, each with a one-cell border
+      create the output file and the vz dataset
+      run both kernels once, then zero the fields    # fault in the memory pages
+
+  TIME LOOP
+      for it = 0 .. n_iterations-1:
+
+          src <- ricker(it * dt)                     # one grid point
+          sxx[src_z, src_x] += src
+          szz[src_z, src_x] += src
+
+          for each interior point (i, j):            # update_stress
+              forward differences of vx, vz
+              sxx, szz, sxz <- updated values, each scaled by damp
+
+          for each interior point (i, j):            # update_velocity
+              backward differences of sxx, szz, sxz
+              vx, vz <- updated values, each scaled by damp
+
+          if it mod frame_stride == 0:
+              write the interior of vz to the output file
+
+  TEARDOWN
+      close the output file
+  ```,
+  caption: [
+    The sequential solver in full. The two inner loops are the C kernels; every
+    other line is Python.
+  ],
+) <seq-pseudo-code>
+
+The four derived arrays, $mu$, $lambda$, $lambda + 2 mu$ and $1 slash rho$, are computed once during setup rather than inside the loop. The kernels read exactly these quantities, so no material property is ever recomputed.
+
+The damping is applied within each update rather than as a separate sweep over the grid.
+
+=== The division between Python and C
+
+The program is written in two languages, Python reads the three model files, applies padding, derives the elastic parameters, builds the damping ramp and creates the output file. 
+
+C handles the other half. The time loop performs the same small amount of arithmetic at every grid point at every step, fifty thousand times over, and at that volume every cycle counts. Writing those two kernels by hand is what makes the baseline worth measuring against.
+
+In the parallel version the same line places MPI communication on the Python side, alongside the rest of the orchestration. This costs nothing, because mpi4py passes NumPy buffers directly to the MPI library rather than copying them. What this means is that the kernels contain no communication.
+
 == Parallel Design
 === Parallelization Coverage
 
@@ -800,7 +862,162 @@ When a neighboring rank does not exist because a rank lies on the edge of the gl
 
 
 = Implementation
-== Sequential
+== Sequential <sec-seq-impl>
+This section gives the code behind @seq-pseudo-code, in the order the program executes it.
+
+
+=== Calling the kernel <seq-calling-kernel>
+
+The kernels are invoked through `ctypes`. NumPy's `ndpointer` declares each argument as a two-dimensional, C-contiguous `float32` array, so the arrays are passed as raw pointers with nothing copied and nothing converted.
+
+#figure(
+```python
+  _float2 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=2,
+                                   flags="C_CONTIGUOUS")
+
+  lib = ctypes.CDLL(kernel_library_path)
+  lib.update_stress.argtypes = (
+      [_float2] * 9            # vx, vz, sxx, szz, sxz, lam, lam2mu, mu, damp
+      + [ctypes.c_float] * 3   # dt, dx, dz
+      + [ctypes.c_int] * 6     # nz, nx, iz0, iz1, jx0, jx1
+  )
+```,
+  caption: [
+    Binding the C kernel.
+  ],
+) <lst-ctypes>
+
+The library path is the only place the sequential and parallel drivers differ on the Python side, since each loads its own build of the kernel.
+
+=== Setup 
+
+
+The model is read with `segyio`, which returns the traces. These are stacked and transposed into $(n_z, n_x)$ order, so that depth is the first index and the horizontal position varies fastest in memory.
+
+#figure(
+```python
+  def load_segy(path):
+      with segyio.open(path, "r", ignore_geometry=True) as f:
+          return np.stack([np.array(tr) for tr in f.trace]).T
+```,
+  caption: [
+    Reading one SEG-Y file. The trace geometry is ignored, since only the sample values are required.
+  ],
+) <lst-segy>
+
+Each field is then padded by $n_b = 240$ cells on every side and the elastic parameters are derived from it. Padding copies the outermost row or column outward rather than inserting a constant, which avoids introducing an artificial contrast at the edge of the physical model.
+
+#figure(
+```python
+  vp  = pad_field(vp0,  nz, nx, nz0, nx0, pad_top, pad_left)
+  vs  = pad_field(vs0,  nz, nx, nz0, nx0, pad_top, pad_left)
+  rho = pad_field(rho0, nz, nx, nz0, nx0, pad_top, pad_left)
+
+  mu      = (rho * vs ** 2).astype(np.float32)
+  lam     = (rho * vp ** 2 - 2.0 * mu).astype(np.float32)
+  lam2mu  = (lam + 2.0 * mu).astype(np.float32)
+  inv_rho = (1.0 / rho).astype(np.float32)
+```,
+  caption: [
+    Padding the model and deriving the Lamé parameters. Storing $lambda + 2 mu$ and $1 slash rho$ removes an addition and a division from the inner loop.
+  ],
+) <lst-material>
+
+The damping array is built next. Each side receives a ramp that rises quadratically towards the outer edge and falls to zero where the absorbing layer meets the physical model. 
+
+#figure(
+```python
+  def ramp(n, power=2.0):
+      return np.linspace(0.0, 1.0, n, dtype=np.float32) ** power
+
+  sigma = np.zeros((nz, nx), dtype=np.float32)
+  r = ramp(pad_left)
+  for i in range(pad_left):                      # left edge; right and top alike
+      sigma[:, i] = np.maximum(sigma[:, i], 60.0 * r[pad_left - 1 - i])
+  ...
+  r = ramp(pad_bottom)
+  for i in range(pad_bottom):                    # bottom absorbs twice as hard
+      sigma[-1 - i, :] = np.maximum(sigma[-1 - i, :], 120.0 * r[pad_bottom - 1 - i])
+
+  damp = np.clip(1.0 - sigma * dt, 0.0, 1.0).astype(np.float32)
+```,
+  caption: [
+    Construction of the sponge layer. The right and top edges are omitted, as they mirror the left.
+  ],
+) <lst-damping>
+
+=== The time loop
+
+The source is a Ricker wavelet evaluated at the current time and added to both diagonal stress components at a single grid point. In the parallel version one rank owns that point; in the sequential case it is always the only rank.
+
+
+#figure(
+```python
+  def ricker(self, t):
+      a = (np.pi * self.f0 * (t - self.src_t0)) ** 2
+      return (1.0 - 2.0 * a) * np.exp(-a)
+
+  src = np.float32(self.src_amp * self.ricker(np.float32(it) * self.dt))
+  w.sxx[li, lj] += src
+  w.szz[li, lj] += src
+```,
+  caption: [
+    The Ricker source. Adding to $sigma_(x x)$ and $sigma_(z z)$ but not to
+    $sigma_(x z)$ renders the source isotropic.
+  ],
+) <lst-source>
+
+With that in place, the loop itself is four statements.
+
+#figure(
+```python
+  for it in range(n_iterations):
+      inject_ricker_source(sxx, szz, it)          # one grid point
+      update_stress_c(vx, vz, sxx, szz, sxz,      # C kernel
+                      lam, lam2mu, mu, damp, dt, dx, dz)
+      update_velocity_c(vx, vz, sxx, szz, sxz,    # C kernel
+                        inv_rho, damp, dt, dx, dz)
+      if it % frame_stride == 0:
+          write_frame_to_hdf5(vz)
+```,
+  caption: [The sequential time-stepping loop.],
+) <lst-seqloop>
+
+=== The stress kernel 
+
+@lst-stresskernel gives the stress update. It is a loop over rows containing a loop over columns, with the row offsets computed once outside the inner loop and every pointer marked `restrict`, so that the compiler may assume the arrays do not overlap.
+
+#figure(
+```c
+  for (int i = iz0; i < iz1; ++i) {
+      int row  = i * nx;
+      int rowp = (i + 1) * nx;          // the row below
+
+      for (int j = jx0; j < jx1; ++j) {
+          int k = row + j;
+
+          float dvx_dx = vx[k + 1]     - vx[k];     // forward differences
+          float dvx_dz = vx[rowp + j]  - vx[k];
+          float dvz_dx = vz[k + 1]     - vz[k];
+          float dvz_dz = vz[rowp + j]  - vz[k];
+
+          float sxx_new = sxx[k] + lam2mu[k]*dtx*dvx_dx + lam[k]*dtz*dvz_dz;
+          float szz_new = szz[k] + lam[k]*dtx*dvx_dx + lam2mu[k]*dtz*dvz_dz;
+          float sxz_new = sxz[k] + mu[k]*(dtz*dvx_dz + dtx*dvz_dx);
+
+          float d = damp[k];            // sponge, folded into the same pass
+          sxx[k] = sxx_new * d;
+          szz[k] = szz_new * d;
+          sxz[k] = sxz_new * d;
+      }
+  }
+```,
+  caption: [
+    The sequential stress update kernel. The velocity kernel has the same     structure with backward differences, the row above in place of the row below, and two output fields rather than three.
+  ],
+) <lst-stresskernel>
+
+The loop bounds `iz0`, `iz1`, `jx0` and `jx1` arrive as arguments rather than being derived inside the kernel. This is what allows the parallel version to confine each process to its own tile without a second copy of the code.
 
 = Results
 == Sequential Performance
