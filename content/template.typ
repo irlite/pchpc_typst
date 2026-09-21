@@ -17,9 +17,8 @@ performance results obtained on an HPC cluster, examining how the
 implementation scales with an increasing number of processes and cores.
 Finally, we will discuss these results and potential future work.
 
-= Background
+= Methodology
 == Marmousi2 Model
-
 Marmousi2 is an upgraded version of the 1988 Marmousi model, which increased the models width, depth and made it fully elastic by adding S-wave velocity field. The structure of the Marmousi model comes from the North Quenguela Trough in the Quanza Basin of Angola. This region comprises of mostly shale with some layers of sand, a marl anticline inside a faulted zone and a evacuated salt layer and hydrocarbon traps in  the centre #cite(<martin2006>)  #cite(<versteeg1994>). Martin and his coleagues increased the width of the model from 9.2 km to 17 km. They also added 41 horizons to reach 199 and gave it a S-wave velocity field so that we have shear information. They also added a 450 meter water layer on the top to represent a deep-water setting.
 
 We chose it for three reasons. It is a standard benchmark, so we can find other published numbers to compare our results. It is elastic so we can work with five fields instead, thus increasing the memory per data point. And at full resolution it is big enough that a parlllel run is worth while. 
@@ -61,7 +60,7 @@ $v_p$, $v_s$ and $rho$ on a 1.25 m grid, which `segyio` reads directly.
   ],
 ) <tab-model>
 
-== Elastodynamic wave equation in velocity-stress formulation
+== Elastodynamic wave equation
 Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
 Computing this velocity field requires solving the elastic wave equation, and different numerical approaches exist for doing so, trading off complexity against accuracy. In this work, we use a second order accurate finite difference scheme.
@@ -439,8 +438,7 @@ Both kernels perform an ordinary two point finite difference over array indices 
 
 In addition to being staggered in space, the scheme is also staggered in time. Rather than updating stress and velocity from a single shared snapshot of the fields, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme, and it makes the computation second order accurate in time.
 
-= Implementation
-== Sequential
+== Tiling
 
 Every speedup is measured against the sequential implementation. It solves the same equation on the same grid with the same boundaries and writes the output vertical particle velocity $v_z$. Its inner loops are compiled C rather than interpreted Python, so it represents a reasonable serial implementation rather than an artificially slow one.
 
@@ -769,9 +767,7 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
   ],
 ) <fig:domdecomp>
 
-As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. This does not just provide improved accuracy, it also cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Because each velocity value sits between two stress points rather than on top of one, computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field, rather than both. Concretely, without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five. Since the stencils used are otherwise compact, reaching only one grid point in each required direction, the halo itself remains a single ghost cell wide regardless of staggering, staggering only changes which side that one cell comes from.
-
-Two separate exchanges are still required per timestep, one for the velocity fields and one for the stress fields, but this is a consequence of the temporal staggering rather than of the spatial staggering itself. The stress fields must be fully updated using the exchanged velocity values before they can, in turn, be exchanged and used to update velocity. Spatial staggering therefore determines the direction and amount of data in each of these two exchanges, not the fact that two are needed in the first place.
+As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. This does not just provide improved accuracy, it also cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Because each velocity value sits between two stress points rather than on top of one, computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field, rather than both. Concretely, without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five.
 
 #figure(
   box(width: 16cm, height: 8.5cm)[
@@ -839,6 +835,142 @@ Two separate exchanges are still required per timestep, one for the velocity fie
   ],
 ) <fig:halodirs>
 
+Two separate exchanges are still required per timestep, one for the velocity fields and one for the stress fields, but this is a consequence of the temporal staggering rather than of the spatial staggering itself. The stress fields must be fully updated using the exchanged velocity values before they can, in turn, be exchanged and used to update velocity.
+
+The naive version previously applied performed each timestep in two fully separate sweeps: first, velocity was exchanged and used to compute stress everywhere, then stress was exchanged and used to compute velocity everywhere. This ordering is required by the temporal staggering described earlier, and it appears to prevent fusing the two kernels together, since velocity generally cannot be computed until the full stress exchange has completed.
+
+This is only true at the border of a rank's subdomain. Since the stencils used here reach only a single neighboring point, the vast majority of a rank's points depend only on data the rank already owns, regardless of any exchange. Only a thin strip at the edge actually needs data from a neighbor. This makes it possible to fuse stress and velocity for the interior immediately, while only the border falls back to waiting for the exchange, and since the interior does not depend on the exchange at all, the exchange can be issued in the background and left to complete while the interior is tiled, hiding its latency behind useful computation. This latency hiding only applies to the stress exchange: the velocity exchange still has to complete beforehand, since the interior stress computation itself depends on it.
+
+Concretely, one timestep is carried out in the following six steps, illustrated in @fig:timestep-stages:
+
+1. `exchange_forward_halos`: velocity is exchanged with the minus-side neighbors, blocking until complete.
+2. `update_stress_edges_c`: stress is computed for the thin border strip, using the freshly exchanged velocity.
+3. `begin_backward_halos`: the border stress values just computed are sent to the plus-side neighbors, using a non-blocking call that returns immediately.
+4. `update_stress_velocity_interior_c`: stress and velocity are fused and tiled for the interior, running while the exchange from step 3 completes in the background.
+5. `finish_backward_halos`: the rank waits for the exchange from step 3 to complete and unpacks the received stress values.
+6. `update_velocity_boundary_c`: velocity is computed for the border strip, using the stress values that just arrived.
+
+#figure(
+  box(width: 15cm, height: 5.0cm)[
+    #let cell = 0.38cm
+    #let n = 7
+
+    #let blue = rgb("#3d78e8")
+    #let red = rgb("#c0392b")
+    #let purple = rgb("#8a3de8")
+    #let grey = rgb("#d9d9d9")
+    #let stroke-color = 0.4pt + rgb("#888888")
+
+    #let grid1 = (
+("BR","BR","BR","BR","BR","BR","VSR"),
+("BR","N","N","N","N","N","TL"),
+("BR","N","N","N","N","N","TL"),
+("BR","N","N","N","N","N","TL"),
+("BR","N","N","N","N","N","TL"),
+("BR","N","N","N","N","N","TL"),
+("HSR","TL","TL","TL","TL","TL","TL"),
+    )
+
+    #let grid2 = (
+      ("I","I","I","I","I","I","BR"),
+      ("I","I","I","I","I","I","BR"),
+      ("I","I","I","I","I","I","BR"),
+      ("I","I","I","I","I","I","BR"),
+      ("I","I","I","I","I","I","BR"),
+      ("I","I","I","I","I","I","BR"),
+      ("BR","BR","BR","BR","BR","BR","BR"),
+    )
+
+    #let grid3 = (
+("TL","TL","TL","TL","TL","TL","VS"),
+("TL","N","N","N","N","N","BR"),
+("TL","N","N","N","N","N","BR"),
+("TL","N","N","N","N","N","BR"),
+("TL","N","N","N","N","N","BR"),
+("TL","N","N","N","N","N","BR"),
+("HS","BR","BR","BR","BR","BR","BR"),
+    )
+
+    #let split-cell-ver(x0, y0, size, left-color, right-color) = {
+      place(top + left, dx: x0, dy: y0,
+        rect(width: size / 2, height: size, fill: left-color, stroke: none))
+      place(top + left, dx: x0 + size / 2, dy: y0,
+        rect(width: size / 2, height: size, fill: right-color, stroke: none))
+      place(top + left, dx: x0, dy: y0,
+        rect(width: size, height: size, fill: none, stroke: stroke-color))
+    }
+    #let split-cell-hor(x0, y0, size, top-color, bottom-color) = {
+    place(top + left, dx: x0, dy: y0,
+        rect(width: size, height: size / 2, fill: top-color, stroke: none))
+    place(top + left, dx: x0, dy: y0 + size / 2,
+        rect(width: size, height: size / 2, fill: bottom-color, stroke: none))
+    place(top + left, dx: x0, dy: y0,
+        rect(width: size, height: size, fill: none, stroke: stroke-color))
+    }
+
+
+    #let draw-grid(x0, grid) = {
+      for i in range(n) {
+        for j in range(n) {
+          let token = grid.at(i).at(j)
+          let x = x0 + j * cell
+          let y = 0.7cm + i * cell
+        if token == "VS" {
+            split-cell-ver(x, y, cell, blue, red)
+        }
+        else if token == "VSR" {
+            split-cell-ver(x, y, cell, red, blue)
+        }
+        else if token == "HS" {
+            split-cell-hor(x, y, cell, blue, red)
+        }
+        else if token == "HSR" {
+            split-cell-hor(x, y, cell, red, blue)
+        }
+        else {
+            let c = if token == "TL" { blue }
+            else if token == "BR" { red }
+            else if token == "I" { purple }
+            else { grey }
+            place(top + left, dx: x, dy: y,
+            rect(width: cell, height: cell, fill: c, stroke: stroke-color))
+        }
+        }
+      }
+    }
+
+    #let legend-entry(x0, y0, color, label) = {
+      place(top + left, dx: x0, dy: y0 + 0.05cm,
+        rect(width: 0.3cm, height: 0.3cm, fill: color, stroke: stroke-color))
+      place(top + left, dx: x0 + 0.45cm, dy: y0,
+        text(size: 8pt)[#label])
+    }
+
+    #let gap = 5.3cm
+
+    #place(top + left, dx: 0cm, dy: 0cm,
+      box(width: n * cell, align(center, text(size: 9pt, weight: "bold")[Velocity\ Exchange])))
+    #draw-grid(0cm, grid1)
+    #legend-entry(0cm, 0.7cm + n * cell + 0.4cm, red, "1. Forward Halo Exchange")
+    #legend-entry(0cm, 0.7cm + n * cell + 0.85cm, blue, "2. Update Stress Edges")
+
+    #place(top + left, dx: gap, dy: 0cm,
+      box(width: n * cell, align(center, text(size: 9pt, weight: "bold")[Stress Send +\ Tiling])))
+    #draw-grid(gap, grid2)
+    #legend-entry(gap, 0.7cm + n * cell + 0.4cm, red, "3. Begin Backward Halo Exchange")
+    #legend-entry(gap, 0.7cm + n * cell + 0.85cm, purple, "4. Perform Interior Tiling")
+
+    #place(top + left, dx: 2 * gap, dy: 0cm,
+      box(width: n * cell, align(center, text(size: 9pt, weight: "bold")[Stress \ Completion])))
+    #draw-grid(2 * gap, grid3)
+    #legend-entry(2 * gap, 0.7cm + n * cell + 0.4cm, red, "5. Finish Backward Halo Exchange")
+    #legend-entry(2 * gap, 0.7cm + n * cell + 0.85cm, blue, "6. Update Velocity Edges")
+  ],
+  caption: [
+    The three stages of one timestep, shown for a single rank's local
+      subdomain. Cells that are involved in both are colored in two colors. ],
+) <fig:timestep-stages>
+
 At a high level, one of these two exchanges can be summarized as follows:
 
 ```
@@ -874,6 +1006,10 @@ cart.Sendrecv(
 When a neighboring rank does not exist because a rank lies on the edge of the global grid, `cart.Shift` returns `MPI.PROC_NULL` for that side. The corresponding `Sendrecv` is therefore a no-op, leaving the PML boundary values in place rather than replacing them with data from a nonexistent neighboring subdomain.
 
 === OpenMP
+
+
+= Implementation
+== Sequential
 
 = Results
 == Sequential Performance
@@ -929,3 +1065,11 @@ While the parallelization strategy presented in this work achieves substantial s
 *Higher order accurate schemes.* The scheme used in this work is second order accurate in both space and time, achieved through spatial and temporal staggering. Higher order finite difference schemes, for example fourth or eighth order accurate in space, are commonly used in production seismic modeling codes, since they allow a coarser grid to be used for the same accuracy, directly reducing both memory footprint and computation. While this could have been done, this improvement is not related to parallelization so it was not the focus of this project.
 
 = Conclusion
+
+This work set out to parallelize a two-dimensional elastic wave forward modeling simulation, applied to the Marmousi2 subsurface model, using a combination of MPI and OpenMP, and to evaluate how well this hybrid approach scales across both single node and multi node configurations. The simulation itself solves the elastodynamic wave equation in its velocity-stress formulation, using a second order accurate finite difference scheme built on a grid that is staggered both spatially and temporally, and distributes the computational domain across MPI ranks with a one cell halo exchanged between neighboring ranks each timestep.
+
+The most important finding of this work was that, beyond a certain point, the dominant bottleneck was not computation itself but memory bandwidth. Single node scaling with OpenMP showed strongly diminishing returns as thread count increased, well before all cores on a socket were saturated, while inter-node scaling using MPI continued to scale considerably better, since each additional node brings its own independent memory subsystem rather than contending for a single shared one.
+
+The project was successful: the parallelized implementation achieved a speedup of [insert concrete number]x over the sequential baseline, while preserving the same numerical scheme and the same physical accuracy. Beyond raw runtime improvements, the parallelization of I/O and compression, switching from a single rank writing compressed output to per rank output files compressed in parallel using Blosc, removed what had been one of the most significant bottlenecks in the original implementation, cutting output related runtime substantially without sacrificing the benefit of a smaller output size.
+
+This work delivered a working hybrid MPI and OpenMP implementation of an elastic wave simulation, a systematic strong and weak scaling study across single and multi node configurations, a comparison of compression strategies and their effect on both runtime and output size, and a identified optimizations, namely GPU acceleration and higher order accurate schemes that were not implemented within the scope of this project but represent clear directions for future work. In this project we have shown that the elastic wave forward modeling problem can be effectively parallelized on a CPU cluster, and also where the practical limits of that parallelization lie.
