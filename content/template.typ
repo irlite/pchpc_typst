@@ -190,7 +190,7 @@ This distinction matters in practice because it directly affects how fine a grid
 
 The finite difference scheme used to update the velocity and stress fields is applied on a spatially staggered grid, commonly referred to as a Virieux grid#cite(<virieux1984>). Rather than storing all five field components, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$, at the same physical location within a grid cell, each component is instead stored at a position offset by half a grid spacing relative to the others. Concretely, the normal stresses $sigma_(x x)$ and $sigma_(z z)$ are defined at integer grid points $(i, j)$, the horizontal velocity $v_x$ is defined half a cell to the side at $(i, j+1/2)$, the vertical velocity $v_z$ is defined half a cell below at $(i+1/2, j)$, and the shear stress $sigma_(x z)$ is defined half a cell in both directions at $(i+1/2, j+1/2)$.
 #figure(
-  box(width: 11cm, height: 8cm)[
+  box(width: 11cm, height: 7cm)[
     #let cell = 2.5cm
     #let pad = 1.5cm
     #let r = 0.16cm
@@ -468,13 +468,7 @@ The finite difference scheme used to update the velocity and stress fields is ap
     )
   ],
   caption: [
-    Layout of a portion of the staggered grid. The normal stresses
-    $sigma_(x x)$ and $sigma_(z z)$ are stored at integer grid points.
-    The horizontal velocity $v_x$ is offset by half a grid spacing along
-    $x$, the vertical velocity $v_z$ is offset by half a grid spacing
-    along $z$, and the shear stress $sigma_(x z)$ is offset by half a
-    grid spacing in both directions.
-  ],
+    Layout of a portion of the staggered grid.  ],
 ) <fig:staggeredgrid>
 
 Placing the two fields on interleaved, offset grids means that whenever a derivative is needed, it is computed from the two nearest neighboring points on the opposite field's grid:
@@ -542,8 +536,7 @@ comparison rather than an artificially slow one.
 
 @seq-pseudo-code gives the solver in full. Setup runs once: it reads the
 model, derives the arrays the kernels need, and prepares the output file.
-The time loop then repeats four operations fifty thousand times. Everything
-else in this chapter and in @sec-seq-impl expands one part of this listing.
+The time loop then repeats four operations for a certain number of times.
 
 #figure(
 ```c
@@ -570,14 +563,12 @@ function update_stress(vx, vz, sxx, szz, sxz, lam, mu, damp, dt):
     for each tile (iz_tile, ix_tile) in domain:
         for i in iz_tile:
             for j in ix_tile:
-                compute strain rates from vx, vz
                 update sxx, szz, sxz
                 apply damping
 function update_velocity(vx, vz, sxx, szz, sxz, invRho, damp, dt):
     for each tile (iz_tile, ix_tile) in domain:
         for i in iz_tile:
             for j in ix_tile:
-                compute stress gradients
                 update vx, vz
                 apply damping
 ```,
@@ -971,182 +962,212 @@ The bottom row and rightmost column are handled differently as well. Their stres
 As was outlined in the MPI section, the stress values of the rightmost column and the bottom row are computed separately, and so are the velocity values of the leftmost column and the top row. These are parallelized with `#pragma omp for simd` for the single full row shared between both points (the bottom row for stress, the top row for velocity), combining thread-level and SIMD parallelism even for this thin strip, and with a plain `#pragma omp for` for the remaining column, which is split across threads point by point rather than vectorized, since its access pattern is too irregular to benefit from SIMD. This ensures that every stage of the timestep, not just the interior, makes use of the available cores, even though the potential speedup is naturally much smaller here given how little work these strips represent relative to the interior.
 
 = Implementation
-== Sequential <sec-seq-impl>
-This section gives the code behind @seq-pseudo-code, in the order the program executes it.
+== Sequential
 
+//This section describes how the five governing equations introduced in @sec-elastodynamic are translated into the two C kernels referenced in @seq-pseudo-code, `update_stress` and `update_velocity`, and how the staggered grid and tiling strategy described in the Background section are realized concretely in array indexing and loop structure.
 
-=== Calling the kernel <seq-calling-kernel>
+=== From Continuous Derivatives to Array Differences
 
-The kernels are invoked through `ctypes`. NumPy's `ndpointer` declares each argument as a two-dimensional, C-contiguous `float32` array, so the arrays are passed as raw pointers with nothing copied and nothing converted.
+Every term of the form $partial f \/ partial t$ in the governing equations becomes a plain update rule once discretized: $f_"new" = f_"old" + d t dot ("right-hand side")$. Since the right-hand side of every equation is itself built entirely from spatial derivatives, and since $d t \/ d x$ and $d t \/ d z$ appear repeatedly, these two ratios are computed once per kernel call rather than once per grid point:
 
-#figure(
-```python
-  _float2 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=2,
-                                   flags="C_CONTIGUOUS")
-
-  lib = ctypes.CDLL(kernel_library_path)
-  lib.update_stress.argtypes = (
-      [_float2] * 9            # vx, vz, sxx, szz, sxz, lam, lam2mu, mu, damp
-      + [ctypes.c_float] * 3   # dt, dx, dz
-      + [ctypes.c_int] * 6     # nz, nx, iz0, iz1, jx0, jx1
-  )
-```,
-  caption: [
-    Binding the C kernel.
-  ],
-) <lst-ctypes>
-
-The library path is the only place the sequential and parallel drivers differ on the Python side, since each loads its own build of the kernel.
-
-=== Setup 
-
-
-The model is read with `segyio`, which returns the traces. These are stacked and transposed into $(n_z, n_x)$ order, so that depth is the first index and the horizontal position varies fastest in memory.
-
-#figure(
-```python
-  def load_segy(path):
-      with segyio.open(path, "r", ignore_geometry=True) as f:
-          return np.stack([np.array(tr) for tr in f.trace]).T
-```,
-  caption: [
-    Reading one SEG-Y file. The trace geometry is ignored, since only the sample values are required.
-  ],
-) <lst-segy>
-
-Each field is then padded by $n_b = 240$ cells on every side and the elastic parameters are derived from it. Padding copies the outermost row or column outward rather than inserting a constant, which avoids introducing an artificial contrast at the edge of the physical model.
-
-#figure(
-```python
-  vp  = pad_field(vp0,  nz, nx, nz0, nx0, pad_top, pad_left)
-  vs  = pad_field(vs0,  nz, nx, nz0, nx0, pad_top, pad_left)
-  rho = pad_field(rho0, nz, nx, nz0, nx0, pad_top, pad_left)
-
-  mu      = (rho * vs ** 2).astype(np.float32)
-  lam     = (rho * vp ** 2 - 2.0 * mu).astype(np.float32)
-  lam2mu  = (lam + 2.0 * mu).astype(np.float32)
-  inv_rho = (1.0 / rho).astype(np.float32)
-```,
-  caption: [
-    Padding the model and deriving the Lamé parameters. Storing $lambda + 2 mu$ and $1 slash rho$ removes an addition and a division from the inner loop.
-  ],
-) <lst-material>
-
-The damping array is built next. Each side receives a ramp that rises quadratically towards the outer edge and falls to zero where the absorbing layer meets the physical model. 
-
-#figure(
-```python
-  def ramp(n, power=2.0):
-      return np.linspace(0.0, 1.0, n, dtype=np.float32) ** power
-
-  sigma = np.zeros((nz, nx), dtype=np.float32)
-  r = ramp(pad_left)
-  for i in range(pad_left):                      # left edge; right and top alike
-      sigma[:, i] = np.maximum(sigma[:, i], 60.0 * r[pad_left - 1 - i])
-  ...
-  r = ramp(pad_bottom)
-  for i in range(pad_bottom):                    # bottom absorbs twice as hard
-      sigma[-1 - i, :] = np.maximum(sigma[-1 - i, :], 120.0 * r[pad_bottom - 1 - i])
-
-  damp = np.clip(1.0 - sigma * dt, 0.0, 1.0).astype(np.float32)
-```,
-  caption: [
-    Construction of the sponge layer. The right and top edges are omitted, as they mirror the left.
-  ],
-) <lst-damping>
-
-=== The time loop
-
-The source is a Ricker wavelet evaluated at the current time and added to both diagonal stress components at a single grid point. In the parallel version one rank owns that point; in the sequential case it is always the only rank.
-
-
-#figure(
-```python
-  def ricker(self, t):
-      a = (np.pi * self.f0 * (t - self.src_t0)) ** 2
-      return (1.0 - 2.0 * a) * np.exp(-a)
-
-  src = np.float32(self.src_amp * self.ricker(np.float32(it) * self.dt))
-  w.sxx[li, lj] += src
-  w.szz[li, lj] += src
-```,
-  caption: [
-    The Ricker source. Adding to $sigma_(x x)$ and $sigma_(z z)$ but not to
-    $sigma_(x z)$ renders the source isotropic.
-  ],
-) <lst-source>
-
-With that in place, the loop itself is four statements.
-
-#figure(
-```python
-  for it in range(n_iterations):
-      inject_ricker_source(sxx, szz, it)          # one grid point
-      update_stress_c(vx, vz, sxx, szz, sxz,      # C kernel
-                      lam, lam2mu, mu, damp, dt, dx, dz)
-      update_velocity_c(vx, vz, sxx, szz, sxz,    # C kernel
-                        inv_rho, damp, dt, dx, dz)
-      if it % frame_stride == 0:
-          write_frame_to_hdf5(vz)
-```,
-  caption: [The sequential time-stepping loop.],
-) <lst-seqloop>
-
-=== The stress kernel 
-
-@lst-stresskernel gives the stress update. It is a loop over rows containing a loop over columns, with the row offsets computed once outside the inner loop and every pointer marked `restrict`, so that the compiler may assume the arrays do not overlap.
-
-#figure(
 ```c
-  for (int i = iz0; i < iz1; ++i) {
-      int row  = i * nx;
-      int rowp = (i + 1) * nx;          // the row below
+const float dtx = dt / dx;
+const float dtz = dt / dz;
+```
 
-      for (int j = jx0; j < jx1; ++j) {
-          int k = row + j;
+Each spatial derivative $partial f \/ partial x$ or $partial f \/ partial z$ is then approximated by exactly two neighboring array reads, exploiting the staggered layout established earlier so that only one grid point in each direction is ever needed, rather than two. Since the arrays are stored as flat, row-major buffers, a point at row $i$ and column $j$ sits at flat index `k = i * nx + j`, where `nx` is the number of columns in the local grid. A step of one row therefore corresponds to an offset of `nx` in the flat index, so `k + 1` is the neighbor one column to the right and `k + nx` is the neighbor one row below.
 
-          float dvx_dx = vx[k + 1]     - vx[k];     // forward differences
-          float dvx_dz = vx[rowp + j]  - vx[k];
-          float dvz_dx = vz[k + 1]     - vz[k];
-          float dvz_dz = vz[rowp + j]  - vz[k];
+=== The Stress Kernel
 
-          float sxx_new = sxx[k] + lam2mu[k]*dtx*dvx_dx + lam[k]*dtz*dvz_dz;
-          float szz_new = szz[k] + lam[k]*dtx*dvx_dx + lam2mu[k]*dtz*dvz_dz;
-          float sxz_new = sxz[k] + mu[k]*(dtz*dvx_dz + dtx*dvz_dx);
+`update_stress` implements the three constitutive equations,
 
-          float d = damp[k];            // sponge, folded into the same pass
-          sxx[k] = sxx_new * d;
-          szz[k] = szz_new * d;
-          sxz[k] = sxz_new * d;
-      }
-  }
-```,
-  caption: [
-    The sequential stress update kernel. The velocity kernel has the same     structure with backward differences, the row above in place of the row below, and two output fields rather than three.
-  ],
-) <lst-stresskernel>
+$ (∂ sigma_(x x)) / (∂ t) = (lambda + 2 mu) (∂ v_x) / (∂ x) + lambda (∂ v_z) / (∂ z) $
+$ (∂ sigma_(z z)) / (∂ t) = lambda (∂ v_x) / (∂ x) + (lambda + 2 mu) (∂ v_z) / (∂ z) $
+$ (∂ sigma_(x z)) / (∂ t) = mu ((∂ v_x) / (∂ z) + (∂ v_z) / (∂ x)) $
 
-The loop bounds `iz0`, `iz1`, `jx0` and `jx1` arrive as arguments rather than being derived inside the kernel. This is what allows the parallel version to confine each process to its own tile without a second copy of the code.
+Since the velocity components sit half a grid spacing ahead of the stress components on the staggered grid, both derivatives use a forward difference, reading the current point and its neighbor one step ahead:
+
+```c
+const float dvx_dx = vx[k + 1]  - vx[k];
+const float dvx_dz = vx[k + nx] - vx[k];
+const float dvz_dx = vz[k + 1]  - vz[k];
+const float dvz_dz = vz[k + nx] - vz[k];
+```
+
+Each of the three equations is then assembled term for term, using the precomputed Lamé combinations $lambda$, $lambda + 2mu$, and $mu$ read directly from the `lam`, `lam2mu`, and `mu` arrays:
+
+```c
+const float sxx_new = sxx[k] + lam2mu[k] * dtx * dvx_dx + lam[k]    * dtz * dvz_dz;
+const float szz_new = szz[k] + lam[k]    * dtx * dvx_dx + lam2mu[k] * dtz * dvz_dz;
+const float sxz_new = sxz[k] + mu[k]     * (dtz * dvx_dz + dtx * dvz_dx);
+```
+
+The absorbing boundary treatment described earlier is applied immediately afterward, by multiplying each updated value by the precomputed damping coefficient at that point before it is written back:
+
+```c
+const float d = damp[k];
+sxx[k] = sxx_new * d;
+szz[k] = szz_new * d;
+sxz[k] = sxz_new * d;
+```
+
+=== The Velocity Kernel
+
+`update_velocity` implements the two momentum equations,
+
+$ (∂ v_x) / (∂ t) = 1/rho ((∂ sigma_(x x)) / (∂ x) + (∂ sigma_(x z)) / (∂ z)) $
+$ (∂ v_z) / (∂ t) = 1/rho ((∂ sigma_(x z)) / (∂ x) + (∂ sigma_(z z)) / (∂ z)) $
+
+Here the roles are reversed: since stress sits half a grid spacing behind velocity on the staggered grid, both derivatives use a backward difference, reading the current point and its neighbor one step behind:
+
+```c
+const float dsxx_dx = sxx[k] - sxx[k - 1];
+const float dsxz_dz = sxz[k] - sxz[k - nx];
+const float dsxz_dx = sxz[k] - sxz[k - 1];
+const float dszz_dz = szz[k] - szz[k - nx];
+```
+
+The factor $1 \/ rho$ is read directly from the precomputed `inv_rho` array rather than dividing at every point, and the two equations are assembled and damped in the same way as the stress kernel:
+
+```c
+const float ir = inv_rho[k];
+const float vx_new = vx[k] + ir * (dtx * dsxx_dx + dtz * dsxz_dz);
+const float vz_new = vz[k] + ir * (dtx * dsxz_dx + dtz * dszz_dz);
+const float d = damp[k];
+vx[k] = vx_new * d;
+vz[k] = vz_new * d;
+```
+=== Tiling the Loop Nest
+
+Both kernels sweep the same local grid, but rather than iterating over every row and column in one pass, the iteration space is divided into small tiles, applying the tiling strategy motivated in the Background section. The outer two loops step through the grid in blocks of `tile_z` rows and `tile_x` columns, and only once a tile has been fully advanced does the computation move on to the next one:
+
+```c
+for (int ib = iz0; ib < iz1; ib += tile_z) {
+    int ie = min(ib + tile_z, iz1);
+    for (int jb = jx0; jb < jx1; jb += tile_x) {
+        int je = min(jb + tile_x, jx1);
+        for (int i = ib; i < ie; ++i) {
+            for (int j = jb; j < je; ++j) {
+                ...
+            }
+        }
+    }
+}
+```
+
+Since the sequential baseline runs on a single core, tiling here serves purely as a cache optimization rather than a parallelization strategy. `tile_z` and `tile_x` are chosen so that the working set of the ten arrays involved, five fields and five material properties, for one tile remains small enough to stay resident in the core's own cache while both the stress and velocity update for that tile are computed, rather than being evicted and re-fetched from main memory in between. This is the same tiling technique used in the parallel implementation, applied here without any OpenMP directives, since a single core has no work to divide among threads.
+
+== Parallel
+
+=== MPI
+
+The decomposition search, halo buffer layout, and the six-step execution order described in the Parallel Design section are realized directly in the driver. The chosen dimensions are passed to `Create_cart`, from which each rank derives its coordinates and neighbors:
+
+```python
+cart = comm.Create_cart(dims=dims, periods=[False, False])
+z_minus, z_plus = cart.Shift(0, 1)
+x_minus, x_plus = cart.Shift(1, 1)
+```
+
+The forward and backward exchanges correspond directly to steps 1 and 3/5 above:
+
+```python
+cart.Sendrecv(send_buf, dest=x_minus, recvbuf=recv_buf, source=x_plus)
+requests = [cart.Isend(...), cart.Irecv(...)]
+MPI.Request.Waitall(requests)
+```
+
+Every kernel call passes NumPy arrays directly through `ctypes`, with no copying and no MPI call inside any kernel.
+
+=== OpenMP
+
+The tile size described above is computed as:
+
+```c
+int rows = 4 * omp_get_max_threads();
+```
+
+The stress-then-velocity ordering within a tile, relying on the implicit barrier between two separate `#pragma omp for` constructs, is written as:
+
+```c
+#pragma omp for schedule(static)
+for (int i = ib; i < ie; ++i) stress_row(...);
+
+#pragma omp for schedule(static)
+for (int i = ib; i < ie; ++i) velocity_row(...);
+```
+
+The nested SIMD vectorization within each row is added inside `stress_row` and `velocity_row`:
+
+```c
+#pragma omp simd
+for (int j = jx0; j < jx1; ++j) {
+    const int k = row + j;
+    ...
+}
+```
+
+The edge and boundary kernels follow the same pattern, `#pragma omp for simd` for the contiguous row, a plain `#pragma omp for` for the column.
 
 = Results
 == Sequential Performance
 === Overall Runtime
 === Runtime Breakdown by Program Phase
 == Parallel Performance
+
 === Strong Scaling
+When measuring strong scaling, the problem size remains constant while compute resources are increased.
+
 *Strong Scaling Single Node*
 
+@fig:strong_sn hows that the resulting curve has the characteristic roofline shape commonly seen in performance measurements. Speedup rises with core count up to a point, then flattens. What stands out here is how early this plateau occurs, with little further improvement beyond 64 cores.
+
+#figure(
+  image("assets/strong_sn.png", width: 90%),
+  caption: [
+  ],
+) <fig:strong_sn>
+
+We attribute this to memory bandwidth becoming saturated. This result is somewhat disappointing, since tiling was introduced specifically to address this bottleneck, and while it did improve performance significantly, and even scaling to a small degree, it did not eliminate the plateau as we had hoped.
+
+Other explanations for this plateau are less consistent with the data. If threads within a rank were split across the node's two CPU sockets, this would introduce additional latency from cross-socket memory access. This cannot be the dominant effect here, however, since the 64 core configuration already places a rank's threads across both sockets, yet shows no comparable drop in performance at that point. Reduced per-core turbo frequency at higher active core counts is similarly unlikely to explain the plateau, since it would degrade performance gradually as more cores become active, rather than producing the sharp cliff observed here.
+
 *Strong Scaling Multi Node*
+
+What stands out in the multi node strong scaling benchmark @fig:strong_mn is that performance does not saturate in the same way when additional nodes are added, despite the added MPI communication overhead this introduces. This supports our earlier interpretation of the single node results. Since each additional node provides its own independent memory bandwidth, rather than sharing a single pool of it as additional cores on the same node do, the absence of a similar plateau here suggests that memory bandwidth, and not communication, was indeed the limiting factor within a single node, especially since the communication in a single node is much faster than between nodes.
+
+#figure(
+  image("assets/strong_mn.png", width: 90%),
+  caption: [
+  ],
+) <fig:strong_mn>
+
+
 === Weak Scaling
 
 When testing weak scaling, the problem size is adjusted in proportion to the compute resources used. How the problem size is adjusted in this case has been detailed in the implementation section. As with strong scaling, weak scaling was again evaluated separately for single node and multi node runs.
 
 *Weak Scaling Single Node*
+What is interesting is that scaling is somewhat better when using weak scaling seen in @fig:weak_sn. This is still consistent with the memory bandwidth theory since the data is fewer and the ceiling not reached.
+
+#figure(
+  image("assets/weak_sn.png", width: 90%),
+  caption: [
+  ],
+) <fig:weak_sn>
 
 *Weak Scaling Multi Node*
 
+#figure(
+  image("assets/weak_mn.png", width: 90%),
+  caption: [
+  ],
+) <fig:weak_mn>
+
 === Threads per Rank
+//@fig:tpr shows how performance differs for the same 96 cores depending on the amound of ranks they are distributed.
 === OpenMP Approaches
+//Other OpenMP approaches were tried as well to see which performs the best. They are shown in @fig:omp . Ultimately, the tiling strategy outlined above has shown to perform the best.
 === Compression Approaches
 
 As detailed in the parallelization section, Blosc has been used to parallelize the compression step. Without this, waiting for rank 0 to finish compressing the output on its own was the dominant bottleneck. This bottleneck is examined further in the Vampir section. In addition to parallelizing the compression itself, we also switched from gzip to lz4 as the underlying compression algorithm, since lz4 is substantially faster while still providing a useful reduction in output size.
@@ -1174,6 +1195,8 @@ What stands out is how poor the single node scaling was, particularly in compari
 == Improvements
 
 While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps naturally onto the thousands of lightweight threads a GPU provides. The bottleneck identified in this work was memory bandwidth rather than arithmetic throughput, and GPUs typically offer severalfold higher memory bandwidth than a CPU socket.
+
+Additionally, the memory bandwidth restriction remains unproven. LIKWID was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the stencil kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction.
 
 = Conclusion
 
