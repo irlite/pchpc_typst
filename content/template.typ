@@ -71,7 +71,7 @@ The SEG open data collection #cite(<segopendata>) distributes the dataset as thr
 == Elastodynamic wave equation
 Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
-Computing this velocity field requires solving the elastic wave equation, and different numerical approaches exist for doing so, trading off complexity against accuracy. In this work, we use a second order accurate finite difference scheme.
+The velocity field is obtained by numerically solving the elastodynamic wave equation#cite(<aki2002>). Several classes of methods exist for doing so, trading off complexity against accuracy. In this work, a finite difference method is used which approximates each derivative in the governing equations using the difference between nearby values on a grid, rather than the true, continuous derivative, turning the equations into a discrete update rule that can be computed directly.
 
 The Marmousi2 model provides the P-wave velocity $v_p$, the S-wave velocity $v_s$, and the mass density $rho$ at every point of a realistic, geologically structured subsurface model. From these three quantities, we ultimately want to compute the velocity components $v_x$ and $v_z$ and the stress components $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ at every grid point and every timestep. To do so, the elastic update equations additionally require the Lamé parameters $lambda$ and $mu$, which are not provided directly by the model but can be derived from $v_p$, $v_s$ like this:
 
@@ -495,23 +495,6 @@ Placing the two fields on interleaved, offset grids means that whenever a deriva
   $v_x (i, j + 1/2)$,#h(0.4em)
   $v_z (i + 1/2, j + 1)$,#h(0.4em)
   $v_z (i + 1/2, j)$.
-In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
-
-Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point:
-
-```c
-dvx_dx = (vx[i][j+1] - vx[i][j]) / dx;
-dvz_dz = (vz[i+1][j] - vz[i][j]) / dz;
-```
-
-while the velocity update reads stress one index behind, a backward difference, since the stress powering $v_x$ conceptually sits half a cell before the current point:
-
-```c
-dsxx_dx = (sxx[i][j] - sxx[i][j-1]) / dx;
-dsxz_dz = (sxz[i][j] - sxz[i-1][j]) / dz;
-```
-
-Both kernels perform an ordinary two point finite difference over array indices that are one full array step apart, but because one kernel always looks forward and the other always looks backward, the effective location each result represents is shifted by half a grid spacing relative to its input without ever needing to track fractional indices.
 
 === Temporal Staggering
 
@@ -524,6 +507,11 @@ As a consequence of the temporal staggering described above, every timestep firs
 To remove this bottleneck, this work applies tiling. When using tiling, the grid is divided into many small tiles instead of computing the entire field. For each tile, velocity is computed first, and immediately afterward, while those values are still resident in the cache, the corresponding stress values are computed using them, before the next tile is processed. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back, is reduced to a single round trip, since each value is consumed again while still cheap to access, rather than after it has already been evicted.
 
 = Methodology
+== Output
+
+The primary output of the simulation is the vertical particle velocity $v_z$ at every grid point, saved at regular intervals throughout the run rather than only at the final timestep, so that the propagation of the wave through the model can be observed over time rather than only its final state.
+
+Each saved frame is visualized using Matplotlib, rendering $v_z$ as a 2D image over the model domain. Since these frames are saved at fixed intervals, they can be assembled in sequence into a video, producing an animation of the wave as it propagates outward from the source and interacts with the structure of the Marmousi2 model.
 == Sequential Design
 Every speedup in this report is measured against the sequential solver. It
 solves the same equations on the same grid with the same boundary treatment
@@ -534,11 +522,10 @@ comparison rather than an artificially slow one.
 
 === Structure of the program
 
-@seq-pseudo-code gives the solver in full. Setup runs once: it reads the
+In the following pseudo code, the solver is presented. Setup runs once: it reads the
 model, derives the arrays the kernels need, and prepares the output file.
 The time loop then repeats four operations for a certain number of times.
 
-#figure(
 ```c
 SETUP
     read vp, vs, rho from three SEG-Y files
@@ -558,7 +545,10 @@ TIME LOOP
             save_frame(out, vz)
 TEARDOWN
     close the output file
-
+```
+\
+\
+```c
 function update_stress(vx, vz, sxx, szz, sxz, lam, mu, damp, dt):
     for each tile (iz_tile, ix_tile) in domain:
         for i in iz_tile:
@@ -571,32 +561,28 @@ function update_velocity(vx, vz, sxx, szz, sxz, invRho, damp, dt):
             for j in ix_tile:
                 update vx, vz
                 apply damping
-```,
-  caption: [
-      The sequential solver in full. The two functions update_stress and update_velocity are the C kernels. The remaining code is Python.
-  ],
-) <seq-pseudo-code>
+```
 
 The four derived arrays, $mu$, $lambda$, $lambda + 2 mu$ and $1 slash rho$, are
 computed once during setup rather than inside the loop. The kernels read
 exactly these quantities, so no material property is ever recomputed.
 over the grid.
 
-=== The division between Python and C
+=== The Division Between Python and C
 
-The program is written in two languages. Python reads the three model
-files, applies padding, derives the elastic parameters, builds the damping
-ramp and creates the output file.
+The program is written in two languages. Python reads the three model files, applies padding, derives the elastic parameters, builds the damping ramp, and creates the output file.
 
-C handles the other half. The time loop performs the same small amount of
-arithmetic at every grid point at every step, fifty thousand times over, and
-at that volume every cycle counts. Writing those two kernels by hand is what
-makes the baseline worth measuring against.
+C handles the arithmetic, implemented as separate kernels compiled into a shared library and called from Python via `ctypes`. This division exists specifically to enable integration with OpenMP, since expressing the fused, tiled loop structure and thread-level synchronization described in later sections is not practical using vectorized NumPy operations alone.
 
-In the parallel version the same line places MPI communication on the
-Python side, alongside the rest of the orchestration. This costs nothing,
-because mpi4py passes NumPy buffers directly to the MPI library rather than
-copying them. What this means is that the kernels contain no communication.
+=== Staggering
+In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
+
+Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point: $partial v_x \/ partial x$ is approximated as the value of $v_x$ one column to the right minus the value at the current point, divided by $Delta x$, and $partial v_z \/ partial z$ is approximated the same way using the row directly below.
+
+The velocity update reads stress one index behind instead, a backward difference, since the stress powering $v_x$ conceptually sits half a cell before the current point: $partial sigma_(x x) \/ partial x$ is approximated as the value at the current point minus the value one column to the left, and $partial sigma_(x z) \/ partial z$ is approximated the same way using the row directly above.
+
+Both updates perform an ordinary two point finite difference over grid points that are one full grid spacing apart, but because the stress update always looks forward and the velocity update always looks backward, the effective location each result represents is shifted by half a grid spacing relative to its input, without ever needing to track fractional indices.
+
 == Parallel Design
 === Parallelization Coverage
 
@@ -962,9 +948,35 @@ The bottom row and rightmost column are handled differently as well. Their stres
 As was outlined in the MPI section, the stress values of the rightmost column and the bottom row are computed separately, and so are the velocity values of the leftmost column and the top row. These are parallelized with `#pragma omp for simd` for the single full row shared between both points (the bottom row for stress, the top row for velocity), combining thread-level and SIMD parallelism even for this thin strip, and with a plain `#pragma omp for` for the remaining column, which is split across threads point by point rather than vectorized, since its access pattern is too irregular to benefit from SIMD. This ensures that every stage of the timestep, not just the interior, makes use of the available cores, even though the potential speedup is naturally much smaller here given how little work these strips represent relative to the interior.
 
 = Implementation
+== Setup
+
+*Hardware.* All experiments were run on nodes equipped with Intel Xeon Platinum 8468 ("Sapphire Rapids") processors, with 48 cores per socket and two sockets per node, giving 96 cores per node in total.
+
+*Grid and Model.* Unless stated otherwise, results use the full resolution Marmousi2 grid of $2801 times 13601$ points (@tab-model), padded by 240 cells on each side for the absorbing boundary.
+
+*Timesteps.* The simulation was run for 50000 timesteps.
+
+*Output.* Every 100th frame is being saved giving 500 frames. Results are compressed using lz4.
 == Sequential
+Throughout this section, `iz0, iz1, jx0, jx1` denote the row and column bounds of the interior range being updated, and `last_i = iz1 - 1`, `last_j = jx1 - 1` denote its final row and column. Since the arrays are stored as flat, row-major buffers, a point at row $i$ and column $j$ sits at flat index `k = i * nx + j`, where `nx` is the number of columns in the local grid, so `k + 1`/`k - 1` reach the neighboring column and `k + nx`/`k - nx` reach the neighboring row. This notation is reused unchanged in the Parallel section below.
 
 //This section describes how the five governing equations introduced in @sec-elastodynamic are translated into the two C kernels referenced in @seq-pseudo-code, `update_stress` and `update_velocity`, and how the staggered grid and tiling strategy described in the Background section are realized concretely in array indexing and loop structure.
+
+=== Staggered Finite Differences
+
+The forward and backward differences described in sec-staggering are implemented directly as two-point array reads. For $sigma_(x x)$, the forward differences of $v_x$ and $v_z$ are computed as:
+
+```c
+const float dvx_dx = vx[k + 1]  - vx[k];
+const float dvz_dz = vz[k + nx] - vz[k];
+```
+
+and for $v_x$, the backward differences of $sigma_(x x)$ and $sigma_(x z)$ are computed as:
+
+#```c
+const float dsxx_dx = sxx[k] - sxx[k - 1];
+const float dsxz_dz = sxz[k] - sxz[k - nx];
+```
 
 === From Continuous Derivatives to Array Differences
 
@@ -975,7 +987,7 @@ const float dtx = dt / dx;
 const float dtz = dt / dz;
 ```
 
-Each spatial derivative $partial f \/ partial x$ or $partial f \/ partial z$ is then approximated by exactly two neighboring array reads, exploiting the staggered layout established earlier so that only one grid point in each direction is ever needed, rather than two. Since the arrays are stored as flat, row-major buffers, a point at row $i$ and column $j$ sits at flat index `k = i * nx + j`, where `nx` is the number of columns in the local grid. A step of one row therefore corresponds to an offset of `nx` in the flat index, so `k + 1` is the neighbor one column to the right and `k + nx` is the neighbor one row below.
+Each spatial derivative $partial f \/ partial x$ or $partial f \/ partial z$ is approximated by exactly two neighboring array reads, exploiting the staggered layout established above so that only one grid point in each direction is ever needed, rather than two.
 
 === The Stress Kernel
 
@@ -1061,53 +1073,141 @@ Since the sequential baseline runs on a single core, tiling here serves purely a
 
 === MPI
 
-The decomposition search, halo buffer layout, and the six-step execution order described in the Parallel Design section are realized directly in the driver. The chosen dimensions are passed to `Create_cart`, from which each rank derives its coordinates and neighbors:
+The decomposition search, halo exchange, and six-step execution order described in the Parallel Design section are realized directly in the driver. This section shows how each of those pieces is written in code.
+
+*Building the Cartesian Communicator*
+
+The `(pz, px)` pair chosen by the decomposition search is passed to `Create_cart`, from which each rank derives its coordinates and its four neighbors along both axes:
 
 ```python
-cart = comm.Create_cart(dims=dims, periods=[False, False])
+cart = comm.Create_cart(dims=dims, periods=[False, False], reorder=False)
+coord_z, coord_x = cart.Get_coords(rank)
 z_minus, z_plus = cart.Shift(0, 1)
 x_minus, x_plus = cart.Shift(1, 1)
 ```
 
-The forward and backward exchanges correspond directly to steps 1 and 3/5 above:
+*Forward Exchange*
+
+The forward exchange sends each rank's first real row and column to its minus-side neighbors and receives into the plus-side ghost cells, corresponding to step 1:
 
 ```python
-cart.Sendrecv(send_buf, dest=x_minus, recvbuf=recv_buf, source=x_plus)
-requests = [cart.Isend(...), cart.Irecv(...)]
-MPI.Request.Waitall(requests)
+def exchange_forward_halos(fields):
+    for k, field in enumerate(fields):
+        send_x[k] = field[1:-1, 1]
+    cart.Sendrecv(send_x, dest=x_minus, recvbuf=recv_x, source=x_plus)
+    if x_plus != MPI.PROC_NULL:
+        for k, field in enumerate(fields):
+            field[1:-1, -1] = recv_x[k]
+    # repeated for the z axis using field[1, 1:-1] and field[-1, 1:-1]
 ```
 
-Every kernel call passes NumPy arrays directly through `ctypes`, with no copying and no MPI call inside any kernel.
+This is called once, on `[vx, vz]`, before any computation happens in a timestep.
+
+*Backward Exchange*
+
+The backward exchange is split into two calls corresponding to steps 3 and 5, so that the interior can be computed in between. `begin_backward_halos` packs the last real row and column and issues non-blocking sends and receives:
+
+```python
+def begin_backward_halos(fields):
+    for k, field in enumerate(fields):
+        send_x[k] = field[1:-1, -2]
+    requests = [
+        cart.Irecv(recv_x, source=x_minus, tag=30),
+        cart.Isend(send_x, dest=x_plus, tag=30),
+    ]
+    # repeated for the z axis using field[-2, 1:-1]
+    return requests
+```
+
+`finish_backward_halos` is called after the interior kernel has run, and only then blocks on the transfer before unpacking the received values into the minus-side ghost cells:
+
+```python
+def finish_backward_halos(fields, requests):
+    MPI.Request.Waitall(requests)
+    if x_minus != MPI.PROC_NULL:
+        for k, field in enumerate(fields):
+            field[1:-1, 0] = recv_x[k]
+    # repeated for the z axis
+```
+
+Every kernel call in between passes NumPy arrays directly through `ctypes`, with no copying and no MPI call inside any kernel, so communication and computation remain fully separate at the code level.
 
 === OpenMP
 
-The tile size described above is computed as:
+*Tile Size*
+
+The tile size described in the Parallel Design section is computed once per run by `get_tile_rows`, defaulting to four rows per thread, clamped to between 16 and 256, and overridable through an environment variable for tuning:
 
 ```c
 int rows = 4 * omp_get_max_threads();
+if (rows < 16)  rows = 16;
+if (rows > 256) rows = 256;
 ```
 
-The stress-then-velocity ordering within a tile, relying on the implicit barrier between two separate `#pragma omp for` constructs, is written as:
+*The Tiled Loop*
+
+`update_stress_velocity_interior` opens a single `#pragma omp parallel` region around the entire tile loop, so the thread team is created once per kernel call rather than once per tile. Each iteration of the outer loop processes one tile, `ib` to `ie`, first computing stress for every row in the tile, then, in a second `#pragma omp for`, computing velocity for the same rows:
 
 ```c
-#pragma omp for schedule(static)
-for (int i = ib; i < ie; ++i) stress_row(...);
-
-#pragma omp for schedule(static)
-for (int i = ib; i < ie; ++i) velocity_row(...);
+#pragma omp parallel
+{
+    for (int ib = iz0; ib < last_i; ib += tile_rows) {
+        int ie = min(ib + tile_rows, last_i);
+        #pragma omp for schedule(static)
+        for (int i = ib; i < ie; ++i) {
+            stress_row(vx, vz, sxx, szz, sxz, lam, lam2mu, mu, damp,
+                       dtx, dtz, nx, i, jx0, last_j);
+        }
+        #pragma omp for schedule(static)
+        for (int i = max(ib, iz0 + 1); i < ie; ++i) {
+            velocity_row(vx, vz, sxx, szz, sxz, inv_rho, damp,
+                         dtx, dtz, nx, i, jx0 + 1, jx1);
+        }
+    }
+}
 ```
 
-The nested SIMD vectorization within each row is added inside `stress_row` and `velocity_row`:
+`schedule(static)` divides `[ib, ie)` into contiguous, equally sized blocks decided once for the loop, so a thread is assigned the same rows in the velocity loop that it just computed stress for in the loop above. Since both loops sit inside the same `#pragma omp parallel` region, the implicit barrier at the end of the first `#pragma omp for` is what enforces the ordering: every thread has finished writing stress for the entire tile before any thread starts reading it in the second loop, without any explicit synchronization being written. The velocity loop starts one row later than the stress loop (`max(ib, iz0 + 1)`) and one column later (`jx0 + 1`), since the very first row and column of the interior range depend on halo data and are deferred to the boundary kernel, as described above. After the tile loop finishes, one further `#pragma omp for simd` pass computes velocity for the interior's last row, whose stress was already available locally.
+
+*Inside a Row*
+
+`stress_row` and `velocity_row` receive the row index `i` and the column bounds from the loop above and compute the flat row offset once before iterating over columns:
 
 ```c
-#pragma omp simd
+static inline void stress_row(..., int i, int jx0, int jx1) {
+    const int row = i * nx;
+    const int rowp = row + nx;
+    #pragma omp simd
+    for (int j = jx0; j < jx1; ++j) {
+        const int k = row + j;
+        ...
+    }
+}
+```
+
+By the time this function runs, `#pragma omp for` has already assigned row `i` to exactly one thread, so `#pragma omp simd` here only vectorizes across `j`, the columns of that single row, rather than distributing work across threads itself.
+
+*Edge and Boundary Kernels*
+
+`update_stress_edges` and `update_velocity_boundary` each open their own, shorter `#pragma omp parallel` region, since they run only once per timestep rather than once per tile. In both, the single full row (the bottom row for stress, the top row for velocity) is parallelized with `#pragma omp for simd`, combining both levels directly on one loop:
+
+```c
+#pragma omp for simd schedule(static)
 for (int j = jx0; j < jx1; ++j) {
-    const int k = row + j;
+    const int k = last_i * nx + j;
     ...
 }
 ```
 
-The edge and boundary kernels follow the same pattern, `#pragma omp for simd` for the contiguous row, a plain `#pragma omp for` for the column.
+The remaining column, one point per row, is handled by a separate point-wise helper (`stress_point`, `velocity_point`) and split across threads with a plain `#pragma omp for`, without vectorization, since a single point per iteration gives the compiler nothing to vectorize:
+
+```c
+#pragma omp for schedule(static)
+for (int i = iz0; i < last_i; ++i) {
+    stress_point(vx, vz, sxx, szz, sxz, lam, lam2mu, mu, damp,
+                 dtx, dtz, nx, i, last_j);
+}
+```
 
 = Results
 == Sequential Performance

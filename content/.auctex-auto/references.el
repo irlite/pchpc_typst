@@ -13,6 +13,7 @@
     "segopendata"
     "cerjan1985"
     "courant_1928"
-    "ricker1951"))
+    "ricker1951"
+    "aki2002"))
  '(or :bibtex :latex))
 
