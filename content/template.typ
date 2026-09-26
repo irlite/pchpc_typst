@@ -71,7 +71,7 @@ The SEG open data collection #cite(<segopendata>) distributes the dataset as thr
 == Elastodynamic wave equation
 Ultimately, the data computed by the simulation represents the particle velocity at every point in the material at every timestep, which is used to visualize how the wave travels through the medium. Since the source and the receivers of interest are placed near the surface, the waves of interest primarily travel upward, so the velocity component of interest is the one aligned with that direction, the vertical velocity $v_z$. This also mirrors real seismic acquisition, where a receiver placed on the surface predominantly measures the vertical component of ground motion from an upward-arriving wave.
 
-The velocity field is obtained by numerically solving the elastodynamic wave equation#cite(<aki2002>). Several classes of methods exist for doing so, trading off complexity against accuracy. In this work, a finite difference method is used which approximates each derivative in the governing equations using the difference between nearby values on a grid, rather than the true, continuous derivative, turning the equations into a discrete update rule that can be computed directly.
+The velocity field is obtained by numerically solving the elastodynamic wave equation#cite(<aki2002>). Several classes of methods exist for doing so, trading off complexity against accuracy. In this work, a finite difference method is used which approximates each derivative in the governing equations using the difference between nearby values on a grid.
 
 The Marmousi2 model provides the P-wave velocity $v_p$, the S-wave velocity $v_s$, and the mass density $rho$ at every point of a realistic, geologically structured subsurface model. From these three quantities, we ultimately want to compute the velocity components $v_x$ and $v_z$ and the stress components $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ at every grid point and every timestep. To do so, the elastic update equations additionally require the Lamé parameters $lambda$ and $mu$, which are not provided directly by the model but can be derived from $v_p$, $v_s$ like this:
 
@@ -129,7 +129,7 @@ combined timestep-to-grid-spacing factor introduced above. If the
 timestep were too large relative to the grid spacing, a wave could
 effectively advance by more than one grid cell within a single
 timestep, which the finite-difference stencil has no way of
-representing correctly, causing errors to grow rather than remain
+representing correctly, causing errors to grow instead of remaining
 bounded as the simulation progresses.
 
 Since the P-wave is always the fastest wave present in an elastic
@@ -142,15 +142,13 @@ used in this work is therefore chosen as
 $ d t = 0.4 dot (min(d x, d z)) / v_(p,max) $
 
 where the factor $0.4$ provides a safety margin below the
-theoretical stability limit, rather than operating at the limit
-itself, to remain robust to the additional approximations present
+theoretical stability limit to remain robust to the additional approximations present
 in the scheme, such as the damping applied near the absorbing
 boundaries.
 == Absorbing Boundary Damping
 
 Reflections from the edges of the grid are suppressed using a
-simple damping mask rather than a physically derived boundary
-condition. This technique is known as a sponge boundary #cite(<cerjan1985>).
+simple damping mask condition. This technique is known as a sponge boundary #cite(<cerjan1985>).
 The model is surrounded by padded regions on all four
 sides, and within these regions a damping value $d(i,j) in [0,1]$
 is precomputed for every grid point.
@@ -178,13 +176,13 @@ travel back into the model, their amplitude has been reduced to a
 negligible level.
 
 == Staggering
-To increase the accuracy of the computation, staggering is applied. Staggering refers to deliberately storing or updating different quantities at offset positions, rather than at the same point, whether that offset is in space or in time. The two staggered quantities are never evaluated at exactly the same location, but each is placed exactly halfway between two locations of the other. As shown below, this offset is what allows the finite differences used to update each field to reach second order accuracy without requiring a wider stencil  .
+To increase the accuracy of the computation, staggering is applied. Staggering refers to deliberately storing or updating different quantities at offset positions, rather than at the same point, whether that offset is in space or in time. The two staggered quantities are never evaluated at exactly the same location, but each is placed exactly halfway between two locations of the other. As shown below, this offset is what allows the finite differences used to update each field to reach second order accuracy without requiring a wider stencil.
 
 === Second order accuracy
 
-Any time a continuous derivative is approximated using a finite difference, some error is introduced, since the approximation only uses a finite number of nearby values instead of the true, continuous function. The order of accuracy describes how quickly this error shrinks as the discretization is refined, that is, as the grid spacing $Delta$ or timestep $"dt"$ is made smaller. A first order accurate scheme has an error that shrinks proportionally to $Delta$ itself. Halving the spacing only halves the error. A second order accurate scheme has an error that shrinks proportionally to $Delta^2$. Halving the spacing quarters the error. This means that for a small refinement, a second order scheme becomes accurate much faster than a first order one, since its error decreases quadratically rather than linearly as the discretization is refined.
+Any time a continuous derivative is approximated using a finite difference, some error is introduced, since the approximation only uses a finite number of nearby values instead of the true, continuous function. The order of accuracy describes how quickly this error shrinks as the discretization is refined, that is, as the grid spacing $Delta$ or timestep $"dt"$ is made smaller. A first order accurate scheme has an error that shrinks proportionally to $Delta$ itself. Halving the spacing only halves the error. A second order accurate scheme has an error that shrinks proportionally to $Delta^2$. Halving the spacing quarters the error. This means that for a small refinement, a second order scheme becomes accurate much faster than a first order one, since its error decreases quadratically. Without staggering, it would only grow linearly.
 
-This distinction matters in practice because it directly affects how fine a grid or timestep is needed to reach a given accuracy target. A first order scheme generally requires a much finer discretization, and correspondingly far more computation, to reach the same accuracy as a second order scheme. Both the spatial and temporal staggering described below are specifically what allow the finite difference scheme used in this work to achieve second order accuracy, rather than being limited to first order, without requiring a wider, more expensive stencil.
+This distinction matters in practice because it directly affects how fine a grid or timestep is needed to reach a given accuracy target. A first order scheme generally requires a much finer discretization, and correspondingly far more computation, to reach the same accuracy as a second order scheme. Both the spatial and temporal staggering described below are specifically what allow the finite difference scheme used in this work to achieve second order accuracy.
 
 === Spatial Staggering
 
@@ -195,11 +193,17 @@ The finite difference scheme used to update the velocity and stress fields is ap
     #let pad = 1.5cm
     #let r = 0.16cm
 
+
+    //#let red = rgb("#")
+    #let orange = rgb("#E69F00")
+    #let purple = rgb("#009E73")
+    #let green = rgb("#56B4E9")
+    #let grey = rgb("#d9d9d9")
     // Field colors.
-    #let sxx-color = rgb("#006ddc")
-    #let vx-color = rgb("#1bbc3c")
-    #let vz-color = rgb("#c31834")
-    #let sxz-color = rgb("#ffa028")
+    #let sxx-color = rgb("#CC79A7")
+    #let vx-color = rgb("#D55E00")
+    #let vz-color = rgb("#0072B2")
+    #let sxz-color = rgb("#009E73")
     #let black = rgb("#000000")
 
     // Integer grid-point coordinates.
@@ -498,27 +502,26 @@ Placing the two fields on interleaved, offset grids means that whenever a deriva
 
 === Temporal Staggering
 
-In addition to being staggered in space, the scheme is also staggered in time. Rather than updating stress and velocity from a single shared snapshot of the fields, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme, and it makes the computation second order accurate in time.
+In addition to being staggered in space, the scheme is also staggered in time. Stress and velocity are not updated from a single shared snapshot of the fields. Instead, the two are updated at interleaved half time steps so that each update always consumes the most recently computed values of the other field. This is commonly known as a leapfrog scheme, and it makes the computation second order accurate in time.
 
 == Tiling
 
 As a consequence of the temporal staggering described above, every timestep first advances the velocity fields by half a timestep using the stress values just computed, then advances the stress fields by the next half timestep, using the velocity values just computed. Implemented naively, this ordering can hurt performance. Since the entire velocity field is computed first, sweeping across the full grid, by the time this pass finishes, the values computed early in the sweep have long since been pushed out of the cache to make room for those computed later, as the cache cannot hold the full grid at once. When the stress update immediately afterward needs those same velocity values, most of them are no longer available nearby and must instead be streamed back in from main memory. The resulting cost is especially significant relative to how cheap the underlying arithmetic is.
 
-To remove this bottleneck, this work applies tiling. When using tiling, the grid is divided into many small tiles instead of computing the entire field. For each tile, velocity is computed first, and immediately afterward, while those values are still resident in the cache, the corresponding stress values are computed using them, before the next tile is processed. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back, is reduced to a single round trip, since each value is consumed again while still cheap to access, rather than after it has already been evicted.
+To remove this bottleneck, this work applies tiling. When using tiling, the grid is divided into many small tiles instead of computing the entire field. For each tile, velocity is computed first, and immediately afterward, while those values are still resident in the cache, the corresponding stress values are computed using them, before the next tile is processed. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back, is reduced to a single round trip, since each value is consumed again while still cheap to access.
 
 = Methodology
 == Output
 
-The primary output of the simulation is the vertical particle velocity $v_z$ at every grid point, saved at regular intervals throughout the run rather than only at the final timestep, so that the propagation of the wave through the model can be observed over time rather than only its final state.
+The primary output of the simulation is the vertical particle velocity $v_z$ at every grid point, saved at regular intervals throughout the run. Each saved frame is visualized using Matplotlib, rendering $v_z$ as a 2D image over the model domain. Since these frames are saved at fixed intervals, they can be assembled in sequence into a video, producing an animation of the wave as it propagates outward from the source and interacts with the structure of the Marmousi2 model.
 
-Each saved frame is visualized using Matplotlib, rendering $v_z$ as a 2D image over the model domain. Since these frames are saved at fixed intervals, they can be assembled in sequence into a video, producing an animation of the wave as it propagates outward from the source and interacts with the structure of the Marmousi2 model.
 == Sequential Design
 Every speedup in this report is measured against the sequential solver. It
 solves the same equations on the same grid with the same boundary treatment
 as the parallel version, and it writes the same output: the vertical
 particle velocity $v_z$, saved every hundredth step. Its inner loops are
-compiled C rather than interpreted Python, so it is a fair point of
-comparison rather than an artificially slow one.
+compiled C to make it a fair comparison with the parallel solver which needs
+to use C for this part of the program.
 
 === Structure of the program
 
@@ -536,27 +539,25 @@ SETUP
     inv_rho <- 1 / rho
     damp    <- quadratic sponge ramp on all four sides
     dt      <- 0.4 * dx / max(vp)
+
 TIME LOOP
     for it = 0 .. n_iterations-1:
         inject_source(sxx, szz, vz, it, dt)
-        update_stress(vx, vz, sxx, szz, sxz, lam, mu, damp, dt)
-        update_velocity(vx, vz, sxx, szz, sxz, invRho, damp, dt)
+        update_stress_velocity(vx, vz, sxx, szz, sxz,
+                                lam, lam2mu, mu, inv_rho, damp, dt)
         if it mod frame_stride == 0:
             save_frame(out, vz)
+
 TEARDOWN
     close the output file
 ```
-\
-\
 ```c
-function update_stress(vx, vz, sxx, szz, sxz, lam, mu, damp, dt):
+function update_stress_velocity(vx, vz, sxx, szz, sxz, lam, lam2mu, mu, inv_rho, damp, dt):
     for each tile (iz_tile, ix_tile) in domain:
         for i in iz_tile:
             for j in ix_tile:
                 update sxx, szz, sxz
                 apply damping
-function update_velocity(vx, vz, sxx, szz, sxz, invRho, damp, dt):
-    for each tile (iz_tile, ix_tile) in domain:
         for i in iz_tile:
             for j in ix_tile:
                 update vx, vz
@@ -564,24 +565,24 @@ function update_velocity(vx, vz, sxx, szz, sxz, invRho, damp, dt):
 ```
 
 The four derived arrays, $mu$, $lambda$, $lambda + 2 mu$ and $1 slash rho$, are
-computed once during setup rather than inside the loop. The kernels read
+computed once during setup. The kernels read
 exactly these quantities, so no material property is ever recomputed.
 over the grid.
 
 === The Division Between Python and C
 
-The program is written in two languages. Python reads the three model files, applies padding, derives the elastic parameters, builds the damping ramp, and creates the output file.
-
-C handles the arithmetic, implemented as separate kernels compiled into a shared library and called from Python via `ctypes`. This division exists specifically to enable integration with OpenMP, since expressing the fused, tiled loop structure and thread-level synchronization described in later sections is not practical using vectorized NumPy operations alone.
+The program is written in two languages. Python reads the three model files, applies padding, derives the elastic parameters, builds the damping ramp, runs the time loop where it injects the pressure and calls the C kernels, and creates the output file. C handles the arithmetic, implemented as separate kernels compiled into a shared library and called from Python via `ctypes`. This division exists specifically to enable integration with OpenMP which is designed to be used in C programs.
 
 === Staggering
-In the implementation, this offset is not stored explicitly, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
+Spatial staggering is not achieved with offsets, there is no separate coordinate array marking a point as "$i+1/2$". Instead, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$ are all stored as ordinary two dimensional arrays of the same shape, and the staggering exists only implicitly, in which neighboring array index each update kernel reads from. The offset shown in @fig:staggeredgrid is realized purely through the direction of the finite difference used at each point, not through any special indexing scheme.
 
 Concretely, the stress update reads velocity one index ahead, a forward difference, since the velocity powering $sigma_(x x)$ conceptually sits half a cell beyond the current point: $partial v_x \/ partial x$ is approximated as the value of $v_x$ one column to the right minus the value at the current point, divided by $Delta x$, and $partial v_z \/ partial z$ is approximated the same way using the row directly below.
 
 The velocity update reads stress one index behind instead, a backward difference, since the stress powering $v_x$ conceptually sits half a cell before the current point: $partial sigma_(x x) \/ partial x$ is approximated as the value at the current point minus the value one column to the left, and $partial sigma_(x z) \/ partial z$ is approximated the same way using the row directly above.
 
 Both updates perform an ordinary two point finite difference over grid points that are one full grid spacing apart, but because the stress update always looks forward and the velocity update always looks backward, the effective location each result represents is shifted by half a grid spacing relative to its input, without ever needing to track fractional indices.
+
+Temporal Staggering is achieved by first updating stress and then velocity instead of both at once. While this is fused to accomplish tiling, this is still done sequentially.
 
 == Parallel Design
 === Parallelization Coverage
@@ -590,7 +591,7 @@ Both updates perform an ordinary two point finite difference over grid points th
 
 - *Time stepping loop.* The main loop advances the stress and velocity fields one iteration at a time, and each timestep depends on the result of the previous one. This dependency is the Amdahl bottleneck. Because of it the loop over time cannot be parallelized itself, only the work done within a single timestep can be.
 
-- *One time setup.* Reading the SEGY model files, computing the Lame parameters, building the PML damping profile and determining the domain decomposition all happen once before the time loop starts. This is currently repeated on every rank rather than distributed, since the cost is negligible compared to the roughly 50000 timesteps that follow. The final assembly of the per rank output files into one virtual HDF5#cite(<folk2011>) dataset also happens once, done serially by rank 0 after every rank has finished writing. Since this step only links metadata together using VirtualSource rather than copying any data, it finishes almost instantly.
+- *One time setup.* Reading the SEGY model files, computing the Lame parameters, building the PML damping profile and determining the domain decomposition all happen once before the time loop starts. This is currently repeated on every rank rather than distributed, since the cost is negligible compared to the roughly 50000 timesteps that follow. The final assembly of the per rank output files into one virtual HDF5#cite(<folk2011>) dataset also happens once, done serially by rank 0 after every rank has finished writing. Since this step only links metadata together using VirtualSource, it finishes almost instantly.
 
 - *Pressure injection.* The source term is injected at a single grid point, so only the rank that owns this point performs the update. This step cannot be parallelized any further, and the resulting overhead is negligible.
 
@@ -629,7 +630,7 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
 
     // PML background region (fill only)
     #place(top + left, dx: pad, dy: pad,
-      rect(width: pml-w, height: pml-h, fill: rgb("#f5c896"), stroke: none))
+      rect(width: pml-w, height: pml-h, fill: rgb("#E69F00"), stroke: none))
 
     // Cell fills (no stroke here, lines are drawn separately below)
     #for row in range(rows) {
@@ -638,7 +639,7 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
           top + left,
           dx: pad + margin + col * cell,
           dy: pad + margin + row * cell,
-          box(width: cell, height: cell, fill: rgb("#c8d8f5"),
+          box(width: cell, height: cell, fill: rgb("#56B4E9"),
             align(center + horizon, $r_(#row,#col)$)),
         )
       }
@@ -662,17 +663,17 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
     #place(top + left,
       dx: pad + margin + cell,
       dy: pad + margin + cell,
-      rect(width: cell, height: cell, fill: none, stroke: halo-w + rgb("#2a8a2a")))
+      rect(width: cell, height: cell, fill: none, stroke: halo-w + rgb("#009E73")))
 
     // PML labels
     #place(top + left, dx: pad + margin + grid-w / 2 - 0.6cm, dy: pad + margin / 2 - 0.3cm,
-      text(size: 8pt, fill: rgb("#a05000"))[PML])
+      text(size: 8pt, fill: rgb("#000000"))[PML])
     #place(top + left, dx: pad + margin + grid-w / 2 - 0.6cm, dy: pad + margin + grid-h + margin / 2 - 0.3cm,
-      text(size: 8pt, fill: rgb("#a05000"))[PML])
+      text(size: 8pt, fill: rgb("#000000"))[PML])
     #place(top + left, dx: pad + margin / 2 - 0.3cm, dy: pad + margin + grid-h / 2 - 0.6cm,
-      box(width: 1cm, height: 1cm, rotate(-90deg, reflow: true, text(size: 8pt, fill: rgb("#a05000"))[PML])))
+      box(width: 1cm, height: 1cm, rotate(-90deg, reflow: true, text(size: 8pt, fill: rgb("#000000"))[PML])))
     #place(top + left, dx: pad + margin + grid-w + margin / 2 - 0.3cm, dy: pad + margin + grid-h / 2 - 0.6cm,
-      box(width: 1cm, height: 1cm, rotate(-90deg, reflow: true, text(size: 8pt, fill: rgb("#a05000"))[PML])))
+      box(width: 1cm, height: 1cm, rotate(-90deg, reflow: true, text(size: 8pt, fill: rgb("#000000"))[PML])))
 
     // Axes
     #place(top + left, dx: pad, dy: pad - 0.4cm,
@@ -687,9 +688,9 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
     #place(top + left,
       dx: pad + margin + cell,
       dy: pad + margin + grid-h + 0.3cm,
-      line(start: (0cm, 0cm), end: (-1.5cm, 1.3cm), stroke: 1pt + rgb("#2a8a2a")))
+      line(start: (0cm, 0cm), end: (-1.5cm, 1.3cm), stroke: 1pt + rgb("#009E73")))
     #place(top + left, dx: pad + margin + cell - 2.3cm, dy: pad + margin + grid-h + 1.7cm,
-      text(fill: rgb("#2a8a2a"))[halo])
+      text(fill: rgb("#009E73"))[halo])
   ],
   caption: [
     Decomposition of the padded grid into a Cartesian arrangement of MPI
@@ -700,77 +701,86 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
 
 *Halo Exchange*
 
-As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. This does not just provide improved accuracy, it also cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Because each velocity value sits between two stress points rather than on top of one, computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field, rather than both. Concretely, without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five.
+As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. As was briefly mentioned in x and will be shown in more detail in y, computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field instead of both sides. This cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five.
 
 #figure(
-  box(width: 16cm, height: 8.5cm)[
+  box(width: 12cm, height: 5.8cm)[
     #let panel(x0, mirror, title) = {
-      let s = 3cm       // rank body size
-      let h = 0.4cm     // halo strip thickness
-      let dy0 = 2.4cm   // vertical offset of the square within the panel
+      let s = 2.25cm     // rank body size
+      let h = 0.3cm      // halo strip thickness
+      let dy0 = 1.8cm    // vertical offset of the square within the panel
 
-      let green-fill = rgb("#1bbc3c")
-      let green-stroke = rgb("#014a0f")
-      let red-fill = rgb("#c13834")
-      let red-stroke = rgb("#7c1326")
+      let send-color    = rgb("#D55E00")
+      let receive-color = rgb("#0072B2")
+      let middle-color  = rgb("#CC79A7")
+      let corner-color  = rgb("#009E73")
+
+      let dark(c) = c.darken(35%)
 
       // top-left sides vs bottom-right sides swap color depending on mirror
-      let tl-color = if mirror { (green-fill, green-stroke) } else { (red-fill, red-stroke) }
-      let br-color = if mirror { (red-fill, red-stroke) } else { (green-fill, green-stroke) }
+      let tl-color = if mirror { send-color } else { receive-color }
+      let br-color = if mirror { receive-color } else { send-color }
 
       // title
-      place(top + left, dx: x0, dy: 0.9cm,
+      place(top + left, dx: x0, dy: 0.7cm,
         box(width: s + 2 * h, align(center, text(size: 9pt)[#title])))
 
       // rank body
       place(top + left, dx: x0 + h, dy: dy0 + h,
-        rect(width: s, height: s, fill: rgb("#ffa028"), stroke: 1pt + rgb("#3050a0")))
+        rect(width: s, height: s, fill: middle-color))
 
       // top halo strip
       place(top + left, dx: x0 + h, dy: dy0,
-        rect(width: s, height: h, fill: tl-color.at(0), stroke: 0.8pt + tl-color.at(1)))
+        rect(width: s, height: h, fill: tl-color))
       // left halo strip
       place(top + left, dx: x0, dy: dy0 + h,
-        rect(width: h, height: s, fill: tl-color.at(0), stroke: 0.8pt + tl-color.at(1)))
+        rect(width: h, height: s, fill: tl-color))
       // bottom halo strip
       place(top + left, dx: x0 + h, dy: dy0 + h + s,
-        rect(width: s, height: h, fill: br-color.at(0), stroke: 0.8pt + br-color.at(1)))
+        rect(width: s, height: h, fill: br-color))
       // right halo strip
       place(top + left, dx: x0 + h + s, dy: dy0 + h,
-        rect(width: h, height: s, fill: br-color.at(0), stroke: 0.8pt + br-color.at(1)))
+        rect(width: h, height: s, fill: br-color))
+
+      // top-left corner: shares the same direction as the top/left edges
+      place(top + left, dx: x0, dy: dy0,
+        rect(width: h, height: h, fill: tl-color))
+      // bottom-right corner: shares the same direction as the bottom/right edges
+      place(top + left, dx: x0 + h + s, dy: dy0 + h + s,
+        rect(width: h, height: h, fill: br-color))
+      // top-right corner: diagonal neighbor, not part of this exchange
+      place(top + left, dx: x0 + h + s, dy: dy0,
+        rect(width: h, height: h, fill: corner-color))
+      // bottom-left corner: diagonal neighbor, not part of this exchange
+      place(top + left, dx: x0, dy: dy0 + h + s,
+        rect(width: h, height: h, fill: corner-color))
 
       // top-left corner callout
       let tl-label = if mirror { "send" } else { "received" }
-      place(top + left, dx: x0 - 1cm, dy: dy0 - 1cm,
-        line(start: (0cm, 0cm), end: (1cm, 1cm), stroke: 1pt + tl-color.at(1)))
-      place(top + left, dx: x0 - 1.7cm, dy: dy0 - 1.5cm,
-        text(size: 8pt, fill: tl-color.at(1))[#tl-label])
+      place(top + left, dx: x0 - 0.75cm, dy: dy0 - 0.75cm,
+        line(start: (0cm, 0cm), end: (0.75cm, 0.75cm), stroke: 1pt + dark(tl-color)))
+      place(top + left, dx: x0 - 1.3cm, dy: dy0 - 1.15cm,
+        text(size: 8pt, fill: dark(tl-color))[#tl-label])
 
       // bottom-right corner callout
       let br-label = if mirror { "received" } else { "send" }
       place(top + left, dx: x0 + 2 * h + s, dy: dy0 + 2 * h + s,
-        line(start: (0cm, 0cm), end: (1cm, 1cm), stroke: 1pt + br-color.at(1)))
-      place(top + left, dx: x0 + 2 * h + s + 1.1cm, dy: dy0 + 2 * h + s + 1.1cm,
-        text(size: 8pt, fill: br-color.at(1))[#br-label])
+        line(start: (0cm, 0cm), end: (0.75cm, 0.75cm), stroke: 1pt + dark(br-color)))
+      place(top + left, dx: x0 + 2 * h + s + 0.85cm, dy: dy0 + 2 * h + s + 0.85cm,
+        text(size: 8pt, fill: dark(br-color))[#br-label])
     }
 
-    #panel(2cm, false, "Stress exchange")
-    #panel(9cm, true, "Velocity exchange")
+    #panel(1.5cm, false, "Stress exchange")
+    #panel(6.75cm, true, "Velocity exchange")
   ],
   caption: [
-    The two halo exchanges performed each timestep. For the stress fields
-    (left), each rank sends its bottom and right edge to its plus-side
-    neighbors and receives into its top and left ghost cells from its
-    minus-side neighbors. For the velocity fields (right), the direction
-    is reversed: each rank sends its top and left edge and receives into
-    its bottom and right ghost cells. This mirrors the forward and
-    backward differences used by the staggered grid stencils.
+    The two halo exchanges performed each timestep.
   ],
 ) <fig:halodirs>
 
 *Execution Order and Tiling*
 
-Two separate exchanges are still required per timestep, one for the velocity fields and one for the stress fields, but this is a consequence of the temporal staggering rather than of the spatial staggering itself. The stress fields must be fully updated using the exchanged velocity values before they can, in turn, be exchanged and used to update velocity.
+Two separate exchanges are still required per timestep, one for the velocity fields and one for the stress fields which is a result of the temporal staggering. The stress fields must be fully updated using the exchanged velocity values before they can, in turn, be exchanged and used to update velocity.
 
 The naive version previously applied performed each timestep in two fully separate sweeps. First, velocity was exchanged and used to compute stress everywhere, then stress was exchanged and used to compute velocity everywhere. This ordering is required by the temporal staggering described earlier, and it appears to prevent fusing the two kernels together, since velocity generally cannot be computed until the full stress exchange has completed.
 
@@ -794,11 +804,11 @@ Concretely, one timestep is carried out in the following six steps, illustrated 
     #let cell = 0.38cm
     #let n = 7
 
-    #let blue = rgb("#006DDC")
-    #let red = rgb("#c31834")
-    #let orange = rgb("#ffa028")
-    #let purple = rgb("#fe00fd")
-    #let green = rgb("#1bbc3c")
+    #let blue = rgb("#0072B2")
+    #let red = rgb("#D55E00")
+    #let orange = rgb("#CC79A7")
+    #let purple = rgb("#009E73")
+    #let green = rgb("#56B4E9")
     #let grey = rgb("#d9d9d9")
     #let stroke-color = 0.4pt + rgb("#888888")
 
@@ -923,7 +933,7 @@ It is also worth noting that both halo exchanges cannot be hidden behind tiling,
 
 == OpenMP Parallelization
 
-While the previous sections describe how work is distributed across MPI ranks and how tiling reduces the memory traffic within a rank, this section describes how the work within a single rank is further split across the CPU cores available to it using OpenMP.
+While the previous sections describe how work is distributed across MPI ranks and how tiling reduces the memory traffic within a rank, this section describes how the work within a single rank is further split across the CPU cores available to it using OpenMP. The strategy presented here exploits two distinct, nested levels of parallelism, corresponding to the two axes of the local grid.
 
 === Tile Division
 
@@ -933,22 +943,202 @@ Since each CPU core has its own private L2 cache, a tile is not processed as a s
 
 How many rows each thread is assigned is therefore not arbitrary, but should be chosen so that the resulting working set, the row width multiplied by the number of fields stored per point and the size of each value, fits somewhat within the L2 cache. Once every thread has advanced through both the stress and velocity update for its rows within a tile, the computation proceeds to the next tile in the same fashion, continuing until the entire local grid has been processed.
 
-=== Two Levels of Parallelism
+To accomplish this, `#pragma omp for` is what actually assigns each thread its own row group within a tile, so that different threads work on entirely different rows at the same time. This applies the parallelization along $z$. @fig:timestep-stages-detail visualizes how this strategy is applied to a sub-grid using 2 OpenMP threads. In real runs, 16 threads were commonly used.
 
-Within this tiling scheme, each kernel exploits two distinct, nested levels of parallelism, corresponding to the two axes of the local grid. Along $z$, `#pragma omp for` is what actually assigns each thread its own row group within a tile, so that different threads work on entirely different rows at the same time rather than one thread working through the tile alone. Along $x$, the innermost loop over a single row is marked with `#pragma omp simd`, allowing the compiler to vectorize the update of many neighboring points using a single SIMD instruction on one core. These two levels are independent of one another: thread-level parallelism is what distributes row groups across cores in the first place, while SIMD parallelism speeds up the work each individual thread performs on its own assigned rows.
+#figure(
+    box(width: 20cm, height: 6.5cm)[
+    #let nx = 8    // columns
+    #let nz = 16   // rows
+    #let cell = 0.22cm
+    #let stroke-color = 0.4pt + rgb("#888888")
+
+    #let blue   = rgb("#0072B2")
+    #let red    = rgb("#009E73")
+    #let green  = rgb("#F0E442")
+    #let orange = rgb("#D55E00")
+    #let pink   = rgb("#CC70A7")
+
+    // shift the whole graphic right, to center it in the box
+      #let hshift = 2.2cm
+
+    // reserved space to the left of each grid for the label + brace
+    #let label-w   = 1.3cm
+    #let brace-w   = 0.5cm
+    #let brace-gap = 0.15cm
+    #let margin    = label-w + brace-w + brace-gap
+    #let dots-w    = 0.5cm
+
+    #let panel-w = margin + nx * cell + dots-w
+    #let arrow-w = 0.9cm
+    #let gap = panel-w + arrow-w
+    #let y0 = 0.9cm
+
+    // --- background fill for a block of rows, drawn BEFORE the grid ---
+    #let fill-block(x0, y0, rows-start, rows-count, color) = {
+      place(top + left,
+        dx: x0, dy: y0 + rows-start * cell,
+        rect(width: nx * cell, height: rows-count * cell,
+          fill: color, stroke: none))
+    }
+
+    // --- plain grid drawing, drawn on top of any fill ---
+    #let draw-grid(x0, y0) = {
+      for i in range(nz) {
+        for j in range(nx) {
+          place(top + left,
+            dx: x0 + j * cell,
+            dy: y0 + i * cell,
+            rect(width: cell, height: cell, fill: none, stroke: stroke-color))
+        }
+        // dots after each row (continuation to the right)
+        place(top + left,
+          dx: x0 + nx * cell + 0.12cm,
+          dy: y0 + i * cell - 0.03cm,
+          text(size: 7pt, weight: "bold")[...])
+      }
+      // dots below the last row (continuation downward)
+      for j in range(nx) {
+        place(top + left,
+          dx: x0 + j * cell + cell / 2 - 0.05cm,
+          dy: y0 + nz * cell + 0.05cm,
+          text(size: 7pt, weight: "bold")[$dots.v$])
+      }
+    }
+
+    // --- colored border around a block of rows, drawn AFTER the grid ---
+    #let border-block(x0, y0, rows-start, rows-count, color) = {
+      place(top + left,
+        dx: x0, dy: y0 + rows-start * cell,
+        rect(width: nx * cell, height: rows-count * cell,
+          fill: none, stroke: 2pt + color))
+    }
+
+    // --- thick black divider line after the first 4 rows of a block ---
+    #let divider-line(x0, y0, rows-start) = {
+      place(top + left,
+        dx: x0, dy: y0 + (rows-start + 4) * cell,
+        line(start: (0cm, 0cm), end: (nx * cell, 0cm),
+          stroke: 1.4pt + black))
+    }
+
+    // --- brace + label for a block of rows, placed left of the grid ---
+    #let group-label(x0, y0, rows-start, rows-count, label) = {
+      let h = rows-count * cell
+      let y = y0 + rows-start * cell
+      let brace-shift = 0.1cm
+
+      place(top + left, dx: x0, dy: y + h / 2 - 0.14cm,
+        box(width: label-w, align(right, text(size: 7pt)[#label])))
+      place(top + left, dx: x0 + label-w + 0.05cm, dy: y - brace-shift,
+        box(height: h, width: brace-w,
+          align(center + horizon, text(size: h * 0.99)[{])))
+    }
+
+    #let draw-arrow(x0) = {
+      place(top + left, dx: x0, dy: y0 + nz * cell / 2 - 0.3cm,
+        text(size: 18pt)[$arrow.r$])
+    }
+
+    // ============ panel 1 ============
+    #let px1 = 0cm + hshift
+    #let gx1 = px1 + margin
+    #fill-block(gx1, y0, 0, 8, green)
+    #draw-grid(gx1, y0)
+    #divider-line(gx1, y0, 0)
+    #border-block(gx1, y0, 0, 8, blue)
+    #border-block(gx1, y0, 8, 8, red)
+    #group-label(px1, y0, 0, 4, "Thread 1")
+    #group-label(px1, y0, 4, 4, "Thread 2")
+
+    #draw-arrow(px1 + panel-w + 0.1cm)
+
+    // ============ panel 2 ============
+    #let px2 = gap + hshift
+    #let gx2 = px2 + margin
+    #fill-block(gx2, y0, 0, 8, orange)
+    #draw-grid(gx2, y0)
+    #divider-line(gx2, y0, 0)
+    #border-block(gx2, y0, 0, 8, blue)
+    #border-block(gx2, y0, 8, 8, red)
+    #group-label(px2, y0, 0, 4, "Thread 1")
+    #group-label(px2, y0, 4, 4, "Thread 2")
+
+    #draw-arrow(px2 + panel-w + 0.1cm)
+
+    // ============ panel 3 ============
+    #let px3 = 2 * gap + hshift
+    #let gx3 = px3 + margin
+    #fill-block(gx3, y0, 0, 8, pink)
+    #fill-block(gx3, y0, 8, 8, green)
+    #draw-grid(gx3, y0)
+    #divider-line(gx3, y0, 8)
+    #border-block(gx3, y0, 0, 8, blue)
+    #border-block(gx3, y0, 8, 8, red)
+    #group-label(px3, y0, 8, 4, "Thread 1")
+    #group-label(px3, y0, 12, 4, "Thread 2")
+
+    // big "..." after panel 3
+    #place(top + left, dx: px3 + panel-w + 0.1cm, dy: y0 + nz * cell / 2 - 0.3cm,
+      text(size: 18pt)[$dots.h.c$])
+
+    // ============ shared legend, aligned with the figure's left edge ============
+    #let legend-x0 = gx1
+    #let legend-y1 = y0 + nz * cell + 0.6cm
+    #let legend-y2 = legend-y1 + 0.5cm
+
+    // row 1: thread-boundary colors
+    #place(top + left, dx: legend-x0, dy: legend-y1,
+      rect(width: 0.4cm, height: 0.4cm, fill: none, stroke: 1pt + blue))
+    #place(top + left, dx: legend-x0 + 0.55cm, dy: legend-y1 + 0.06cm,
+      text(size: 8pt)[Tile 1])
+
+    #place(top + left, dx: legend-x0 + 3.2cm, dy: legend-y1,
+      rect(width: 0.4cm, height: 0.4cm, fill: none, stroke: 1pt + red))
+    #place(top + left, dx: legend-x0 + 3.75cm, dy: legend-y1 + 0.06cm,
+      text(size: 8pt)[Tile 2])
+
+    // row 2: computation-stage fill colors
+    #place(top + left, dx: legend-x0, dy: legend-y2 + 0.1cm,
+      rect(width: 0.4cm, height: 0.4cm, fill: green, stroke: 1pt + rgb("#888888")))
+    #place(top + left, dx: legend-x0 + 0.55cm, dy: legend-y2 + 0.16cm,
+      text(size: 8pt)[Stress is Computed])
+
+    #place(top + left, dx: legend-x0 + 3.2cm, dy: legend-y2 + 0.1cm,
+      rect(width: 0.4cm, height: 0.4cm, fill: orange, stroke: 1pt + rgb("#888888")))
+    #place(top + left, dx: legend-x0 + 3.75cm, dy: legend-y2 + 0.16cm,
+      text(size: 8pt)[Velocity is Computed])
+
+    #place(top + left, dx: legend-x0 + 6.7cm, dy: legend-y2 + 0.1cm,
+      rect(width: 0.4cm, height: 0.4cm, fill: pink, stroke: 1pt + rgb("#888888")))
+    #place(top + left, dx: legend-x0 + 7.25cm, dy: legend-y2 + 0.16cm,
+      text(size: 8pt)[Computation Finished])
+
+      #place(top + left, dx: legend-x0 + 10.2cm, dy: legend-y2 + 0.1cm,
+      rect(width: 0.4cm, height: 0.4cm, fill: white, stroke: 1pt + rgb("#888888")))
+    #place(top + left, dx: legend-x0 + 10.75cm, dy: legend-y2 + 0.16cm,
+      text(size: 8pt)[To be Computed])
+  ],
+  caption: [
+      Processing tiles with OpenMP Using 2 Threads.
+  ],
+) <fig:timestep-stages-detail>
+
+=== Vectorization with SIMD
+
+Along $x$, the innermost loop over a single row is marked with `#pragma omp simd`, allowing the compiler to vectorize the update of many neighboring points using a single SIMD instruction on one core. This is independent of the parallelization along $z$. SIMD parallelism only speeds up the work each individual thread performs on its own assigned rows.
 
 === Handling the Domain Boundary When Tiling
 
-The very first row of a rank's interior range, as well as the very leftmost column of every row, are treated specially. Their velocity depends on stress from the row directly above or the column directly to the left, both of which belong to the thin edge strip received from a neighboring rank rather than being available locally. The interior kernel therefore computes only stress for these points and skips their velocity entirely, leaving it to be computed later by the boundary kernel, once the corresponding halo data has arrived.
+The very first row of a rank's interior range, as well as the very leftmost column of every row, are treated specially. Their velocity depends on stress from the row directly above or the column directly to the left, both of which belong to the thin edge strip received from a neighboring rank since it is not available locally. The interior kernel therefore computes only stress for these points and skips their velocity entirely, leaving it to be computed later by the boundary kernel, once the corresponding halo data has arrived.
 
 The bottom row and rightmost column are handled differently as well. Their stress is already computed early, by the edge kernel, specifically so that it can be sent to the neighboring rank without delay, and since that same stress value is exactly what their own velocity update needs, velocity for the bottom row and rightmost column is computed within the interior kernel.
 
 === Parallelizing the Edge Kernels
 
-As was outlined in the MPI section, the stress values of the rightmost column and the bottom row are computed separately, and so are the velocity values of the leftmost column and the top row. These are parallelized with `#pragma omp for simd` for the single full row shared between both points (the bottom row for stress, the top row for velocity), combining thread-level and SIMD parallelism even for this thin strip, and with a plain `#pragma omp for` for the remaining column, which is split across threads point by point rather than vectorized, since its access pattern is too irregular to benefit from SIMD. This ensures that every stage of the timestep, not just the interior, makes use of the available cores, even though the potential speedup is naturally much smaller here given how little work these strips represent relative to the interior.
+As was outlined in the MPI section, the stress values of the rightmost column and the bottom row are computed separately, and so are the velocity values of the leftmost column and the top row. These are parallelized with `#pragma omp for simd` for the single full row shared between both points (the bottom row for stress, the top row for velocity), combining thread-level and SIMD parallelism even for this thin strip, and with a plain `#pragma omp for` for the remaining column, which is split across threads point by point instead of being vectorized, since its access pattern is too irregular to benefit from SIMD. This ensures that every stage of the timestep, not just the interior, makes use of the available cores, even though the potential speedup is naturally much smaller here given how little work these strips represent relative to the interior.
 
 = Implementation
-== Setup
+
 
 *Hardware.* All experiments were run on nodes equipped with Intel Xeon Platinum 8468 ("Sapphire Rapids") processors, with 48 cores per socket and two sockets per node, giving 96 cores per node in total.
 
@@ -962,33 +1152,16 @@ Throughout this section, `iz0, iz1, jx0, jx1` denote the row and column bounds o
 
 //This section describes how the five governing equations introduced in @sec-elastodynamic are translated into the two C kernels referenced in @seq-pseudo-code, `update_stress` and `update_velocity`, and how the staggered grid and tiling strategy described in the Background section are realized concretely in array indexing and loop structure.
 
-=== Staggered Finite Differences
-
-The forward and backward differences described in sec-staggering are implemented directly as two-point array reads. For $sigma_(x x)$, the forward differences of $v_x$ and $v_z$ are computed as:
-
-```c
-const float dvx_dx = vx[k + 1]  - vx[k];
-const float dvz_dz = vz[k + nx] - vz[k];
-```
-
-and for $v_x$, the backward differences of $sigma_(x x)$ and $sigma_(x z)$ are computed as:
-
-#```c
-const float dsxx_dx = sxx[k] - sxx[k - 1];
-const float dsxz_dz = sxz[k] - sxz[k - nx];
-```
-
 === From Continuous Derivatives to Array Differences
 
-Every term of the form $partial f \/ partial t$ in the governing equations becomes a plain update rule once discretized: $f_"new" = f_"old" + d t dot ("right-hand side")$. Since the right-hand side of every equation is itself built entirely from spatial derivatives, and since $d t \/ d x$ and $d t \/ d z$ appear repeatedly, these two ratios are computed once per kernel call rather than once per grid point:
+Every term of the form $partial f \/ partial t$ in the governing equations becomes a plain update rule once discretized: $f_"new" = f_"old" + d t dot ("right-hand side")$. Since $d t \/ d x$ and $d t \/ d z$ appear repeatedly, these two ratios are computed once per kernel call:
 
 ```c
 const float dtx = dt / dx;
 const float dtz = dt / dz;
 ```
 
-Each spatial derivative $partial f \/ partial x$ or $partial f \/ partial z$ is approximated by exactly two neighboring array reads, exploiting the staggered layout established above so that only one grid point in each direction is ever needed, rather than two.
-
+Each spatial derivative $partial f \/ partial x$ or $partial f \/ partial z$ is approximated by exactly two neighboring array reads.
 === The Stress Kernel
 
 `update_stress` implements the three constitutive equations,
@@ -1039,7 +1212,7 @@ const float dsxz_dx = sxz[k] - sxz[k - 1];
 const float dszz_dz = szz[k] - szz[k - nx];
 ```
 
-The factor $1 \/ rho$ is read directly from the precomputed `inv_rho` array rather than dividing at every point, and the two equations are assembled and damped in the same way as the stress kernel:
+The factor $1 \/ rho$ is read directly from the precomputed `inv_rho` array which is cheaper than dividing at every point, and the two equations are assembled and damped in the same way as the stress kernel:
 
 ```c
 const float ir = inv_rho[k];
@@ -1051,7 +1224,7 @@ vz[k] = vz_new * d;
 ```
 === Tiling the Loop Nest
 
-Both kernels sweep the same local grid, but rather than iterating over every row and column in one pass, the iteration space is divided into small tiles, applying the tiling strategy motivated in the Background section. The outer two loops step through the grid in blocks of `tile_z` rows and `tile_x` columns, and only once a tile has been fully advanced does the computation move on to the next one:
+Both kernels sweep the same local grid. The grid is divided into small tiles, applying the tiling strategy motivated in the Background section. The outer two loops step through the grid in blocks of `tile_z` rows and `tile_x` columns, and only once a tile has been fully advanced does the computation move on to the next one:
 
 ```c
 for (int ib = iz0; ib < iz1; ib += tile_z) {
@@ -1067,7 +1240,7 @@ for (int ib = iz0; ib < iz1; ib += tile_z) {
 }
 ```
 
-Since the sequential baseline runs on a single core, tiling here serves purely as a cache optimization rather than a parallelization strategy. `tile_z` and `tile_x` are chosen so that the working set of the ten arrays involved, five fields and five material properties, for one tile remains small enough to stay resident in the core's own cache while both the stress and velocity update for that tile are computed, rather than being evicted and re-fetched from main memory in between. This is the same tiling technique used in the parallel implementation, applied here without any OpenMP directives, since a single core has no work to divide among threads.
+To make comparisons fair, the tiling is applied here too, although it was meant as a optimization strategy for parallelization. It still provides cache optimization improvements..  `tile_z` and `tile_x` are chosen so that the working set of the ten arrays involved, five fields and five material properties, for one tile remains small enough to stay resident in the core's own cache while both the stress and velocity update for that tile are computed This is the same tiling technique used in the parallel implementation, applied here without any OpenMP directives, since a single core has no work to divide among threads.
 
 == Parallel
 
@@ -1146,7 +1319,7 @@ if (rows > 256) rows = 256;
 
 *The Tiled Loop*
 
-`update_stress_velocity_interior` opens a single `#pragma omp parallel` region around the entire tile loop, so the thread team is created once per kernel call rather than once per tile. Each iteration of the outer loop processes one tile, `ib` to `ie`, first computing stress for every row in the tile, then, in a second `#pragma omp for`, computing velocity for the same rows:
+`update_stress_velocity_interior` opens a single `#pragma omp parallel` region around the entire tile loop, so the thread team is created once per kernel. Each iteration of the outer loop processes one tile, `ib` to `ie`, first computing stress for every row in the tile, then, in a second `#pragma omp for`, computing velocity for the same rows:
 
 ```c
 #pragma omp parallel
@@ -1185,11 +1358,11 @@ static inline void stress_row(..., int i, int jx0, int jx1) {
 }
 ```
 
-By the time this function runs, `#pragma omp for` has already assigned row `i` to exactly one thread, so `#pragma omp simd` here only vectorizes across `j`, the columns of that single row, rather than distributing work across threads itself.
+By the time this function runs, `#pragma omp for` has already assigned row `i` to exactly one thread, so `#pragma omp simd` here only vectorizes across `j`, the columns of that single row.
 
 *Edge and Boundary Kernels*
 
-`update_stress_edges` and `update_velocity_boundary` each open their own, shorter `#pragma omp parallel` region, since they run only once per timestep rather than once per tile. In both, the single full row (the bottom row for stress, the top row for velocity) is parallelized with `#pragma omp for simd`, combining both levels directly on one loop:
+`update_stress_edges` and `update_velocity_boundary` each open their own, shorter `#pragma omp parallel` region. In both, the single full row, which is the bottom row for stress and the top row for velocity, is parallelized with `#pragma omp for simd`, combining both levels directly on one loop:
 
 ```c
 #pragma omp for simd schedule(static)
