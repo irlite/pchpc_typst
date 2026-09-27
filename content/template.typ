@@ -1388,83 +1388,195 @@ for (int i = iz0; i < last_i; ++i) {
 === Runtime Breakdown by Program Phase
 == Parallel Performance
 
+The parallel performance of the implementation was evaluated using strong- and
+weak-scaling experiments. Strong scaling measures how effectively additional
+compute resources reduce the runtime of a fixed problem. Weak scaling instead
+measures how well the runtime is maintained when the problem size and the
+available resources are increased together.
+
+Each configuration is written as $n times m times s$, where $n$ is the number
+of nodes, $m$ is the number of MPI ranks per node, and $s$ is the number of
+OpenMP threads assigned to each rank. The total number of CPU cores used by
+configuration $i$ is therefore
+
+#[
+  #set math.equation(numbering: "1.")
+  $
+    P_i = n_i times m_i times s_i.
+  $ <eq:total-resources>
+]
+
+For example, the configuration $2 times 6 times 16$ uses two nodes, six MPI
+ranks per node, and 16 threads per rank, for a total of 192 CPU cores. The
+configuration $1 times 1 times 1$ denotes the purely sequential execution,
+where a separate program was used that employs no OpenMP or MPI at all, as
+opposed to the same parallel program launched with one rank and one thread.
+
+Each reported runtime is the arithmetic mean of four independent runs. Let
+$T_i$ denote the mean runtime of configuration $i$, let $P_i$ denote its total
+number of CPU cores as defined in @eq:total-resources, and let configuration
+$0$ denote the smallest-resource configuration in the corresponding
+experiment.
+
 === Strong Scaling
-When measuring strong scaling, the problem size remains constant while compute resources are increased.
 
-*Strong Scaling Single Node*
+In a strong-scaling experiment, the global problem size remains constant while
+the number of CPU cores is increased. The speedup relative to the baseline is
 
-@fig:strong_sn hows that the resulting curve has the characteristic roofline shape commonly seen in performance measurements. Speedup rises with core count up to a point, then flattens. What stands out here is how early this plateau occurs, with little further improvement beyond 64 cores.
+$
+  S_(i, 0) = T_0 / T_i.
+$ <eq:strong-speedup>
+
+Ideal scaling would reduce the runtime in direct proportion to the increase in
+resources. The strong-scaling efficiency relative to the baseline is therefore
+
+$
+  E_(i, 0)
+  = frac(S_(i, 0), P_i / P_0)
+  = frac(T_0, T_i) times frac(P_0, P_i).
+$ <eq:strong-efficiency-baseline>
+
+The incremental efficiency relative to the preceding configuration is
+
+$
+  E_(i, i - 1)
+  = frac(T_(i - 1) / T_i, P_i / P_(i - 1))
+  = frac(T_(i - 1), T_i) times frac(P_(i - 1), P_i).
+$ <eq:strong-efficiency-previous>
+
+An efficiency of $1.0$ represents ideal linear scaling. A value below $1.0$
+means that the achieved speedup is smaller than the increase in resources,
+while a value above $1.0$ represents super-linear scaling. Efficiency relative
+to the baseline describes the accumulated scaling behavior over the complete
+resource range, while incremental efficiency describes the effect of a single
+transition. The incremental efficiency of the first configuration is undefined
+because no preceding configuration exists.
+
+==== Strong Scaling on a Single Node
+
+@fig:strong_sn shows the strong-scaling results for a fixed problem executed
+with different CPU core counts on a single node, using a single MPI rank with
+an increasing number of OpenMP threads.
 
 #figure(
-  image("assets/strong_sn.png", width: 90%),
+  image("assets/sn_s.png", width: 100%),
   caption: [
+    Strong-scaling results on a single node for one MPI rank and an increasing
+    number of OpenMP threads.
   ],
 ) <fig:strong_sn>
 
-We attribute this to memory bandwidth becoming saturated. This result is somewhat disappointing, since tiling was introduced specifically to address this bottleneck, and while it did improve performance significantly, and even scaling to a small degree, it did not eliminate the plateau as we had hoped.
+==== Strong Scaling Across Multiple Nodes
 
-Other explanations for this plateau are less consistent with the data. If threads within a rank were split across the node's two CPU sockets, this would introduce additional latency from cross-socket memory access. This cannot be the dominant effect here, however, since the 64 core configuration already places a rank's threads across both sockets, yet shows no comparable drop in performance at that point. Reduced per-core turbo frequency at higher active core counts is similarly unlikely to explain the plateau, since it would degrade performance gradually as more cores become active, rather than producing the sharp cliff observed here.
-
-*Strong Scaling Multi Node*
-
-What stands out in the multi node strong scaling benchmark @fig:strong_mn is that performance does not saturate in the same way when additional nodes are added, despite the added MPI communication overhead this introduces. This supports our earlier interpretation of the single node results. Since each additional node provides its own independent memory bandwidth, rather than sharing a single pool of it as additional cores on the same node do, the absence of a similar plateau here suggests that memory bandwidth, and not communication, was indeed the limiting factor within a single node, especially since the communication in a single node is much faster than between nodes.
+@fig:strong_mn shows the strong-scaling results across multiple nodes. Each
+node runs six MPI ranks with 16 threads per rank, for a total of 96 CPU cores
+per node.
 
 #figure(
-  image("assets/strong_mn.png", width: 90%),
+  image("assets/mn_s.png", width: 100%),
   caption: [
+    Strong-scaling results across multiple nodes with six MPI ranks per node
+    and 16 threads per rank.
   ],
 ) <fig:strong_mn>
 
-
 === Weak Scaling
 
-When testing weak scaling, the problem size is adjusted in proportion to the compute resources used. How the problem size is adjusted in this case has been detailed in the implementation section. As with strong scaling, weak scaling was again evaluated separately for single node and multi node runs.
+In a weak-scaling experiment, the global problem size is increased
+approximately in proportion to the number of CPU cores, so that the workload
+assigned to each core remains approximately constant. The method used to
+adjust the spatial dimensions is described in the implementation section.
 
-*Weak Scaling Single Node*
-What is interesting is that scaling is somewhat better when using weak scaling seen in @fig:weak_sn. This is still consistent with the memory bandwidth theory since the data is fewer and the ceiling not reached.
+Strong-scaling efficiency is not applicable in this case, because the
+configurations solve problems of different sizes. Weak scaling is instead
+evaluated using relative runtime. The runtime relative to the first
+configuration is
+
+$
+  R_(i, 0) = T_i / T_0,
+$ <eq:weak-relative-baseline>
+
+and the runtime relative to the preceding configuration is
+
+$
+  R_(i, i - 1) = T_i / T_(i - 1).
+$ <eq:weak-relative-previous>
+
+A relative runtime of $1.0 times$ represents ideal weak scaling. A value of
+$1.2 times$ means that the execution took 20 percent longer than the reference
+execution, while a value of $0.8 times$ means that it required only 80 percent
+of the reference runtime. The term _relative runtime_ is used rather than
+_slowdown_, since values below $1.0 times$ represent a reduction in runtime.
+The comparison with the preceding configuration is undefined for the first
+configuration.
+
+==== Weak Scaling on a Single Node
+
+@fig:weak_sn shows the weak-scaling results obtained on a single node, using a
+single MPI rank with an increasing number of OpenMP threads.
 
 #figure(
-  image("assets/weak_sn.png", width: 90%),
+  image("assets/sn_w.png", width: 100%),
   caption: [
+    Weak-scaling results on a single node for one MPI rank and an increasing
+    number of OpenMP threads.
   ],
 ) <fig:weak_sn>
 
-*Weak Scaling Multi Node*
+==== Weak Scaling Across Multiple Nodes
+
+@fig:weak_mn shows the corresponding weak-scaling results across multiple
+nodes, using six MPI ranks per node and 16 threads per rank.
 
 #figure(
-  image("assets/weak_mn.png", width: 90%),
+  image("assets/mn_w.png", width: 100%),
   caption: [
+    Weak-scaling results across multiple nodes with six MPI ranks per node and
+    16 threads per rank.
   ],
 ) <fig:weak_mn>
 
-=== Threads per Rank
-//@fig:tpr shows how performance differs for the same 96 cores depending on the amound of ranks they are distributed.
-=== OpenMP Approaches
-//Other OpenMP approaches were tried as well to see which performs the best. They are shown in @fig:omp . Ultimately, the tiling strategy outlined above has shown to perform the best.
-=== Compression Approaches
+=== MPI Ranks and Threads per Rank
 
-As detailed in the parallelization section, Blosc has been used to parallelize the compression step. Without this, waiting for rank 0 to finish compressing the output on its own was the dominant bottleneck. This bottleneck is examined further in the Vampir section. In addition to parallelizing the compression itself, we also switched from gzip to lz4 as the underlying compression algorithm, since lz4 is substantially faster while still providing a useful reduction in output size.
+@fig:96 compares configurations that all use 96 CPU cores on a single node,
+distributed differently between MPI ranks and OpenMP threads per rank.
 
-@fig:compression shows the effect of these two changes on total runtime. Running with no compression at all takes 1085 seconds, which serves as a lower bound on runtime. Compressing with sequential gzip on rank 0 takes 2125 seconds, roughly doubling the runtime compared to no compression at all. Switching the compression algorithm to lz4, while still running it sequentially on rank 0, already reduces this to 1630 seconds, a 23% improvement over gzip. Parallelizing this lz4 compression across ranks using Blosc brings the runtime down further still, to 1154 seconds, a 29% improvement over sequential lz4 and a 46% improvement over the original sequential gzip approach. This is only 6% slower than running with no compression at all.
+#figure(
+  image("assets/96_s.png", width: 100%),
+  caption: [
+    Mean runtime for different decompositions of 96 CPU cores into MPI ranks
+    and OpenMP threads per rank.
+  ],
+) <fig:96>
+
+=== Output Compression
+
+As described in the parallelization section, writing the simulation output
+can contribute substantially to the total runtime, particularly when
+compression is involved. Distributing output across MPI ranks, rather than
+collecting the complete output on a single rank, avoids a serial compression
+bottleneck and allows compression to be performed concurrently by multiple
+ranks.
+
+@fig:compression shows the effect of enabling and distributing output
+compression on total runtime. A detailed comparison of specific compression
+algorithms and threading strategies is left for a later section.
 
 #figure(
   image("assets/compression.png", width: 90%),
   caption: [
-    Runtime comparison using no compression, sequential gzip compression
-    on rank 0, sequential lz4 compression on rank 0, and parallel lz4
-    compression distributed across ranks via Blosc.
+    Effect of output compression on total runtime.
   ],
 ) <fig:compression>
-
-Without compression, the output totals 70GB, compared to 34GB when using lz4. Despite the runtime cost of compression, this reduction in output size can be considered worthwhile, and this will matter even more once the simulation is scaled to 3D, where the volume of output data grows substantially.
 
 == Trace Based Analysis with Vampir
 = Discussion
 == Analysis and Bottleneck
 
-The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took [x1] seconds. The fastest parallel run, using 4 nodes with 64 cores each ([x2] total cores), took [x3] seconds. This is a speedup of [x4]x, which is a significant improvement, but only a fraction of the [x5]x increase in compute resources used, corresponding to a parallel efficiency of [x6]%. A noticeably more efficient configuration was the 4-node, 16-core-per-node run, which took [x7] seconds and achieved [x8]% efficiency.
+The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each which is a 960 fol increase, took 203 seconds. This is a speedup of 61 times which is a significant improvement, but only a fraction of the 960 fold increase in compute resources used, corresponding to a parallel efficiency of 8.8%.
 
-What stands out is how poor the single node scaling was, particularly in comparison to the efficiency of inter-node parallelization using MPI#cite(<Forum1994MPIAM>). The most likely explanation is that memory bandwidth becomes saturated once enough OpenMP#cite(<dagum1998>) threads are placed on a single CPU. Each timestep requires reading and writing all five field arrays, $v_x$, $v_z$, $sigma_(x x)$, $sigma_(z z)$, and $sigma_(x z)$, together with the five precomputed material property arrays, for every grid point, regardless of how much of that data is ultimately written to disk. This amounts to roughly [x9] bytes of memory traffic per grid point per iteration, or approximately [x10] GB in total over the full run, which [is / is not] consistent with saturating the node's peak memory bandwidth of [x11] GB/s. Since all OpenMP threads on a single node share the same memory bus, increasing the thread count beyond a certain point no longer increases throughput once this bandwidth limit is reached, whereas MPI ranks on separate nodes each have access to their own independent memory bandwidth, which is why multi node scaling continued to yield efficiency gains where single node scaling did not.
+This stark difference can be attributed to
+
 == Improvements
 
 While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps naturally onto the thousands of lightweight threads a GPU provides. The bottleneck identified in this work was memory bandwidth rather than arithmetic throughput, and GPUs typically offer severalfold higher memory bandwidth than a CPU socket.
