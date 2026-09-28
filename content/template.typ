@@ -1590,6 +1590,76 @@ Gzip was the slowest with 926 seconds, followed by no compression with 731 secon
 What is surprising is that no compression was slower than even sequential LZ4. This contrasts with earlier runs using fewer ranks and threads where no compression outperformed compression. The likely explanation is that with more ranks and threads, compression becomes fast enough that the reduced I/O volume it produces (roughly 35GB instead of 70GB) saves more time than the compression itself costs. At this scale the time saved by writing half as much data to disk outweighs the time spent compressing it while at smaller scales the compression overhead dominated instead. It is therefore demonstrated that the benchmarks presented use the fastest compression method tested.
 
 == Trace Based Analysis with Vampir
+
+=== Measurement Setup
+
+To examine where time is spent at the level of individual functions and threads, the program was instrumented with Score-P 8.4 @scorep and the resulting OTF2 traces were inspected in Vampir @vampir. The C kernels were compiled with the Score-P compiler wrapper, which instruments every OpenMP construct through OPARI2. These regions appear in the trace named after their source location, for example `!$omp for @elastic_kernels_tiled.c:296`. MPI calls are recorded through the Score-P MPI wrappers, and the Python driver runs under the Score-P Python bindings, so driver functions such as `exchange_forward_halos` and the h5py call `Dataset.__setitem__` appear in the trace as well.
+
+Two runs were traced, one writing its output with Blosc LZ4 and one with gzip. Both use the 1x6x16 configuration on the full resolution grid with 50000 timesteps, 64 rows per tile, and every 100th frame saved. Apart from the compression method, the two runs are identical. Since instrumentation adds overhead to every recorded function call, these runs were performed separately from the benchmark runs in the previous sections, and their runtimes should not be compared with the uninstrumented results in Figure 12. The complete traces were too large to be loaded into Vampir, so only the first part of each trace is analyzed below. Total runtimes are therefore taken from the wall-clock time measured by the job itself rather than from the trace, and are listed in @tab-scorep-runtime.
+
+#figure(
+  table(
+    columns: 3,
+    align: (left, right, right),
+    stroke: none,
+    table.hline(),
+    table.header([*Compression*], [*Wall-clock time*], [*Relative runtime*]),
+    table.hline(stroke: 0.5pt),
+    [Blosc LZ4], [665.08 s], [1.00×],
+    [gzip], [857.37 s], [1.29×],
+    table.hline(),
+  ),
+  caption: [Wall-clock time of the two instrumented 1x6x16 runs.],
+) <tab-scorep-runtime>
+
+With LZ4, the instrumented run finishes 192.3 seconds earlier than with gzip, a reduction of 22.4 percent. The traces show where this difference comes from.
+
+=== Overview of the Traced Runs
+
+@fig-vampir-full shows the loaded portion of both traces. The upper part of each screenshot is the timeline, with one row per thread. The lower part shows, for every point in time, the fraction of all threads executing each function group. Both runs start with a setup phase in which only the master thread of each rank is active, reading the model and preparing the fields, before the time loop begins and all 96 threads become busy.
+
+#figure(
+  grid(
+    columns: 1,
+    row-gutter: 10pt,
+    [#image("assets/vampir_lz4_full.png", width: 100%) (a) Blosc LZ4],
+    [#image("assets/vampir_gzip_full.png", width: 100%) (b) gzip],
+  ),
+  caption: [Loaded portion of the Blosc LZ4 and gzip traces, showing the setup phase followed by the start of the time loop.],
+) <fig-vampir-full>
+
+The setup phase takes about 4 seconds in the LZ4 run and about 10 seconds in the gzip run. This difference is unrelated to compression. In the gzip run, `segyio.trace.Trace:gen` accumulates 34.8 seconds across the six ranks, about 5.8 seconds per rank, while it does not appear among the most expensive functions of the LZ4 run. Since both runs read the same SEG-Y files with the same code, we attribute this to varying read performance of the shared file system. It accounts for only a small part of the 192 second difference.
+
+Once the time loop starts, the function summaries of both runs are very similar. The stress loop of the tiled interior kernel (`!$omp for @elastic_kernels_tiled.c:296`) dominates with about 550 seconds of accumulated thread time, followed by the velocity loop (`!$omp for @elastic_kernels_tiled.c:323`) with 135 seconds for LZ4 and 129 seconds for gzip. The stress loop reads the velocity fields and five material arrays that are not yet in cache, while the velocity loop mostly reads stress values that were just written for the same tile. The large gap between the two loops is therefore consistent with the tiling keeping these values cache resident, although, as noted in the Discussion, this could not be confirmed with hardware counters.
+
+The implicit barriers at the end of these two loops (`elastic_kernels_tiled.c:315` and `elastic_kernels_tiled.c:340`) accumulate about 100 seconds in the LZ4 trace and 89 seconds in the gzip trace. That is roughly 12 percent of the time spent in the two loops and their barriers. This is visible as the band of synchronization time below the loop time in the lower part of each screenshot, and it confirms that OpenMP barrier waiting is a significant cost at 16 threads per rank.
+
+=== Cost of an Output Step
+
+@fig-vampir-output compares a window of about 1.02 seconds from each trace at the same zoom level. Each window contains exactly one output step. In the timeline, this step appears as a vertical band in which the stencil kernels stop on every thread of every rank.
+
+#figure(
+  grid(
+    columns: 1,
+    row-gutter: 10pt,
+    [#image("assets/vampir_lz4_output.png", width: 100%) (a) Blosc LZ4, 6.95 s to 7.97 s],
+    [#image("assets/vampir_gzip_output.png", width: 100%) (b) gzip, 15.40 s to 16.42 s],
+  ),
+  caption: [One output step in each trace, shown at the same zoom level of about 1.02 seconds.],
+) <fig-vampir-output>
+
+With gzip, the kernels pause for about 70 ms. During this pause, the lower part of the screenshot shows only about 6 percent of all threads as active, which corresponds to one of the 16 threads per rank. Only the master thread of each rank compresses and writes the frame, while the other 15 threads wait. With LZ4, the pause is shorter, about 20 ms.
+
+The function summary shows the same difference. `Dataset.__setitem__`, the h5py call in which the frame is compressed and written, accumulates 0.408 seconds in the gzip window and 0.069 seconds in the LZ4 window. Spread across the six ranks, this is about 68 ms per rank and frame for gzip and 11 ms for LZ4, a factor of about 6. Blosc handles its compression threads internally, and these are not recorded by Score-P, so the parallel LZ4 compression appears in the trace only as time spent inside `__setitem__` on the master thread.
+
+The longer pause also shows in the time spent computing. In the gzip window, the stress and velocity loops together accumulate about 5.9 thread-seconds less than in the LZ4 window, which corresponds to roughly 60 ms per thread. This is of the same order as the difference in pause length, with the remainder likely due to small differences in kernel speed between the two windows.
+
+Extrapolating the per-frame cost to all 500 frames gives about 34 seconds per rank for gzip and about 6 seconds for LZ4. That is a difference of roughly 28 seconds, well below the 192 seconds measured over the whole run. The traced windows lie within the first few hundred timesteps, when the wave has only just left the source and most of the domain still contains zeros. Such data compresses quickly with both methods. In later frames, the wavefield covers the whole domain and contains far less redundancy, which slows down gzip considerably more than LZ4. The per-frame costs measured here should therefore be seen as a lower bound. Tracing a window near the end of the run would confirm this, but could not be done since the traces could not be loaded completely.
+
+=== Summary
+
+The traces show that the main difference between the two compression methods is the length of the output step. With gzip, only one thread per rank compresses the frame while the remaining 15 wait, and each frame costs about six times as long as with LZ4 even early in the run. Over the full simulation, this adds up to a runtime increase of 29 percent. Beyond output, the traces confirm the two limiting factors named in the Discussion: about 12 percent of loop time is spent waiting at OpenMP barriers, and worker threads sit idle while the master thread runs the Python driver and the halo exchange between kernels.
+
 = Discussion
 == Analysis and Bottleneck
 
