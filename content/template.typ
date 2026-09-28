@@ -1452,7 +1452,7 @@ resource range, while incremental efficiency describes the effect of a single
 transition. The incremental efficiency of the first configuration is undefined
 because no preceding configuration exists.
 
-==== Strong Scaling on a Single Node
+*Strong Scaling on a Single Node*
 
 @fig:strong_sn shows the strong-scaling results for a fixed problem executed
 with different CPU core counts on a single node, using a single MPI rank with
@@ -1466,7 +1466,9 @@ an increasing number of OpenMP threads.
   ],
 ) <fig:strong_sn>
 
-==== Strong Scaling Across Multiple Nodes
+The biggest efficiency drop occurs when comparing the sequential solver to the 1x1x16 run. This makes sense since OpenMP introduces barriers and general overhead. In the subsequent runs, the efficiency relative to its left neighbor stays at around 85% which is reasonable. So while the efficiency at 96 cores was only 21%, it is only 50% diminished from the 39% efficiency of the 16 core run.
+
+*Strong Scaling Across Multiple Nodes*
 
 @fig:strong_mn shows the strong-scaling results across multiple nodes. Each
 node runs six MPI ranks with 16 threads per rank, for a total of 96 CPU cores
@@ -1479,6 +1481,8 @@ per node.
     and 16 threads per rank.
   ],
 ) <fig:strong_mn>
+
+What stands out is that while the incremental efficiency drops for the 2 and 4 node runs, it rises strongly for 8 and 10 node runs. It is unclear why that is. It can, however, not be attributed to noise as this pattern is repeated in weak scaling results. Given that there are 2 halo exchanges per iteration, 30% efficiency is likely to be expected for the 10 node run.
 
 === Weak Scaling
 
@@ -1510,7 +1514,7 @@ _slowdown_, since values below $1.0 times$ represent a reduction in runtime.
 The comparison with the preceding configuration is undefined for the first
 configuration.
 
-==== Weak Scaling on a Single Node
+*Weak Scaling on a Single Node*
 
 @fig:weak_sn shows the weak-scaling results obtained on a single node, using a
 single MPI rank with an increasing number of OpenMP threads.
@@ -1518,12 +1522,13 @@ single MPI rank with an increasing number of OpenMP threads.
 #figure(
   image("assets/sn_w.png", width: 100%),
   caption: [
-    Weak-scaling results on a single node for one MPI rank and an increasing
-    number of OpenMP threads.
+      Weak-scaling results on a single node.
   ],
 ) <fig:weak_sn>
 
-==== Weak Scaling Across Multiple Nodes
+The super-linear scaling from 1x4x16 $->$ 1x5x16 in the strong scaling results could not be repeated. Otherwise, the results are similar and consistent with the strong scaling result.
+
+*Weak Scaling Across Multiple Nodes*
 
 @fig:weak_mn shows the corresponding weak-scaling results across multiple
 nodes, using six MPI ranks per node and 16 threads per rank.
@@ -1535,6 +1540,8 @@ nodes, using six MPI ranks per node and 16 threads per rank.
     16 threads per rank.
   ],
 ) <fig:weak_mn>
+
+As mentioned before, the relative runtime ratio goes back down for the two configurations after 4x6x16 which is consistent with the increase in incremental efficiency for these two configurations relative to that run in the strong scaling benchmark.
 
 === MPI Ranks and Threads per Rank
 
@@ -1549,46 +1556,43 @@ distributed differently between MPI ranks and OpenMP threads per rank.
   ],
 ) <fig:96>
 
+The configuration used in the benchmarks was informed by this experiment, which shows that 16 OpenMP threads per MPI rank is the most efficient choice for most runs. This reflects a tradeoff between the two decomposition strategies. Increasing the number of OpenMP threads per MPI rank increases the latency introduced by thread synchronization barriers, since each barrier must wait for the slowest of the participating threads. Conversely, increasing the number of MPI ranks relative to the number of OpenMP threads increases the number of subdomains and therefore the amount of MPI halo exchange, which increases communication latency.
+
 === Output Compression
 
-As described in the parallelization section, writing the simulation output
-can contribute substantially to the total runtime, particularly when
-compression is involved. Distributing output across MPI ranks, rather than
-collecting the complete output on a single rank, avoids a serial compression
-bottleneck and allows compression to be performed concurrently by multiple
-ranks.
-
-@fig:compression shows the effect of enabling and distributing output
-compression on total runtime. A detailed comparison of specific compression
-algorithms and threading strategies is left for a later section.
+As described earlier, the compression is parallelized as well to avoid the bottleneck that is created when 16 OpenMP threads are available while only one is used for compression. lz4 is used as the compression algorithm in the benchmarks. Further, this is also compared against no compression and compression using gzip. The results are shown in @fig:compression.
 
 #figure(
-  image("assets/compression.png", width: 90%),
+  image("assets/comp_c.png", width: 90%),
   caption: [
     Effect of output compression on total runtime.
   ],
 ) <fig:compression>
 
+Gzip was the slowest with 926 seconds, followed by no compression with 731 seconds, then sequential LZ4 with 692 seconds, and finally parallel LZ4 with 602 seconds, which was the fastest. The gap between gzip and LZ4 is expected since LZ4 is known to be much faster. It is also unsurprising that parallelizing the LZ4 compression improved performance further compared to the sequential version.
+
+What is surprising is that no compression was slower than even sequential LZ4. This contrasts with earlier runs using fewer ranks and threads where no compression outperformed compression. The likely explanation is that with more ranks and threads, compression becomes fast enough that the reduced I/O volume it produces (roughly 35GB instead of 70GB) saves more time than the compression itself costs. At this scale the time saved by writing half as much data to disk outweighs the time spent compressing it while at smaller scales the compression overhead dominated instead. It is therefore demonstrated that the benchmarks presented use the fastest compression method tested.
+
 == Trace Based Analysis with Vampir
 = Discussion
 == Analysis and Bottleneck
 
-The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each which is a 960 fol increase, took 203 seconds. This is a speedup of 61 times which is a significant improvement, but only a fraction of the 960 fold increase in compute resources used, corresponding to a parallel efficiency of 8.8%.
+The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each (a 960 fold increase in compute resources), took 203 seconds. This corresponds to a speedup of 61 times, a significant improvement, but only a fraction of the 960 fold increase in resources, yielding a parallel efficiency of 8.8%.
 
-This stark difference can be attributed to
+It is clear that at this scale we are deep into diminishing returns. Using only 16 cores on a single node already reduced the runtime to 1960 seconds, a speedup of 6.3 times relative to the sequential run. This suggests that most of the achievable efficiency is captured early, while scaling to hundreds of cores yields comparatively small additional gains.
+
+This scaling behavior reflects two main limiting factors, the OpenMP barriers introduced by tiling and one of the two MPI halo exchanges (the forward halo exchange), which could not be hidden behind the interior computation. Nevertheless, earlier bottlenecks related to compression and, in particular, memory bandwidth were successfully addressed. In this light, the result is satisfactory overall, and the tiling mechanism demonstrates its effectiveness when dealing with the memory bandwidth limitations.
 
 == Improvements
 
-While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps naturally onto the thousands of lightweight threads a GPU provides. The bottleneck identified in this work was memory bandwidth rather than arithmetic throughput, and GPUs typically offer severalfold higher memory bandwidth than a CPU socket.
+While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps well onto the thousands of lightweight threads a GPU provides.
 
-Additionally, the memory bandwidth restriction remains unproven. LIKWID was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the stencil kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction.
+Additionally, the memory bandwidth restriction remains unproven. LIKWID was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction. To demonstrate the memory bandwidth bottleneck of earlier versions and how well tiling solved it, this measurement would be highly informative.
 
 = Conclusion
 
-This work set out to parallelize a two-dimensional elastic wave forward modeling simulation, applied to the Marmousi2 subsurface model, using a combination of MPI and OpenMP, and to evaluate how well this hybrid approach scales across both single node and multi node configurations. The simulation itself solves the elastodynamic wave equation in its velocity-stress formulation, using a second order accurate finite difference scheme built on a grid that is staggered both spatially and temporally, and distributes the computational domain across MPI ranks with a one cell halo exchanged between neighboring ranks each timestep.
+This work presented a hybrid MPI and OpenMP implementation of elastic seismic wave forward modeling on the Marmousi2 subsurface model at full resolution. The sequential solver was extended with a domain decomposition across MPI ranks, where the global grid was split into rectangular subdomains chosen to balance their shape and reduce the relative cost of halo exchange, with each rank exchanging halo values with its neighbors every timestep. OpenMP was used to split the work within each rank across threads and vectorize it with SIMD. Tiling, motivated as a cache optimization for the parallel implementation specifically, was used to keep the stress and velocity updates working on data that remains resident in cache within each rank, which was shown to improve problems related to memory bandwidth. Output writing was similarly parallelized, with each rank writing its own compressed file using LZ4 rather than funneling data through a single rank, removing a serial bottleneck that previously left most ranks waiting on compression performed by only one of them.
 
-The most important finding of this work was that, beyond a certain point, the dominant bottleneck was not computation itself but memory bandwidth. Single node scaling with OpenMP showed strongly diminishing returns as thread count increased, well before all cores on a socket were saturated, while inter-node scaling using MPI continued to scale considerably better, since each additional node brings its own independent memory subsystem rather than contending for a single shared one.
+Using this approach, the runtime was reduced from 12374 seconds sequentially to 203 seconds using 960 cores across ten nodes, a speedup of 61 times. Compared to the diminishing returns visible already at smaller core counts, where 16 cores gave a speedup of 6.3 times, this result is reasonable given the combined overhead of OpenMP synchronization and MPI halo exchange at larger scale.
 
-The project was successful: the parallelized implementation achieved a speedup of [insert concrete number]x over the sequential baseline, while preserving the same numerical scheme and the same physical accuracy. Beyond raw runtime improvements, the parallelization of I/O and compression, switching from a single rank writing compressed output to per rank output files compressed in parallel using Blosc, removed what had been one of the most significant bottlenecks in the original implementation, cutting output related runtime substantially without sacrificing the benefit of a smaller output size.
-
-This work delivered a working hybrid MPI and OpenMP implementation of an elastic wave simulation, a systematic strong and weak scaling study across single and multi node configurations, a comparison of compression strategies and their effect on both runtime and output size, and a identified optimizations, namely GPU acceleration and higher order accurate schemes that were not implemented within the scope of this project but represent clear directions for future work. In this project we have shown that the elastic wave forward modeling problem can be effectively parallelized on a CPU cluster, and also where the practical limits of that parallelization lie.
+LIKWID was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.
