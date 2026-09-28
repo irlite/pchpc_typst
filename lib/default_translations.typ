@@ -59,6 +59,6 @@
 )
 
 #let en_report = (
-  .._translations_de,
+  .._translations_en,
   degree_text: "Seminar Report",
 )

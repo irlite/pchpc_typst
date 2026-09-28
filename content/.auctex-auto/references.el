@@ -14,6 +14,8 @@
     "cerjan1985"
     "courant_1928"
     "ricker1951"
-    "aki2002"))
+    "aki2002"
+    "treibig2010"
+    "linux_perf"))
  '(or :bibtex :latex))
 

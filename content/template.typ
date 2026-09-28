@@ -1385,7 +1385,23 @@ for (int i = iz0; i < last_i; ++i) {
 = Results
 == Sequential Performance
 === Overall Runtime
+
+The overall runtime was 12374 seconds, or 3h 26m 14s. This reflects 50000 iterations over the padded compute grid of 3281 x 14081 points, roughly 46.2 million points per iteration once the 240 cell absorbing boundary on each side is included. This total includes setup, the full time loop, and output writing, and is broken down further in the next section. This value also serves as the baseline runtime used for all speedup and efficiency calculations in the Parallel Performance section below.
 === Runtime Breakdown by Program Phase
+/*
+To analyze how much time is spent in each part of the program, `perf`#cite(<linux_perf>) was
+used to generate a flamegraph, shown in @fig:flamegraph.
+
+#figure(
+  image("assets/flamegraph.png", width: 100%),
+  caption: [
+    A flamegraph showing the relative time spent in each part of the
+    sequential solver.
+  ],
+) <fig:flamegraph>
+
+The flamegraph demonstrates that the setup and teardown is dwarfed by the main loop.
+*/
 == Parallel Performance
 
 The parallel performance of the implementation was evaluated using strong- and
@@ -1587,7 +1603,7 @@ This scaling behavior reflects two main limiting factors, the OpenMP barriers in
 
 While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps well onto the thousands of lightweight threads a GPU provides.
 
-Additionally, the memory bandwidth restriction remains unproven. LIKWID was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction. To demonstrate the memory bandwidth bottleneck of earlier versions and how well tiling solved it, this measurement would be highly informative.
+Additionally, the memory bandwidth restriction remains unproven. LIKWID #cite(<treibig2010>) was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction. To demonstrate the memory bandwidth bottleneck of earlier versions and how well tiling solved it, this measurement would be highly informative.
 
 = Conclusion
 
@@ -1595,4 +1611,4 @@ This work presented a hybrid MPI and OpenMP implementation of elastic seismic wa
 
 Using this approach, the runtime was reduced from 12374 seconds sequentially to 203 seconds using 960 cores across ten nodes, a speedup of 61 times. Compared to the diminishing returns visible already at smaller core counts, where 16 cores gave a speedup of 6.3 times, this result is reasonable given the combined overhead of OpenMP synchronization and MPI halo exchange at larger scale.
 
-LIKWID was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.
+LIKWID #cite(<treibig2010>) was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.
