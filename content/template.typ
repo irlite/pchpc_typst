@@ -1388,20 +1388,18 @@ for (int i = iz0; i < last_i; ++i) {
 
 The overall runtime was 12374 seconds, or 3h 26m 14s. This reflects 50000 iterations over the padded compute grid of 3281 x 14081 points, roughly 46.2 million points per iteration once the 240 cell absorbing boundary on each side is included. This total includes setup, the full time loop, and output writing, and is broken down further in the next section. This value also serves as the baseline runtime used for all speedup and efficiency calculations in the Parallel Performance section below.
 === Runtime Breakdown by Program Phase
-/*
-To analyze how much time is spent in each part of the program, `perf`#cite(<linux_perf>) was
-used to generate a flamegraph, shown in @fig:flamegraph.
+To analyze how execution time is distributed across the program, `perf`#cite(<linux_perf>) was used to generate a flame graph, shown in @fig:flamegraph.
 
 #figure(
-  image("assets/flamegraph.png", width: 100%),
+  image("assets/flamegraph.svg", width: 90%),
   caption: [
-    A flamegraph showing the relative time spent in each part of the
+    A flame graph showing the relative time spent in each part of the
     sequential solver.
   ],
 ) <fig:flamegraph>
 
-The flamegraph demonstrates that the setup and teardown is dwarfed by the main loop.
-*/
+The flame graph shows that setup, compression, and teardown are all negligible compared to the main simulation loop, which dominates total runtime. This is why the parallelization effort for the final solver used in the benchmarks below targets the main loop specifically. However, as parallelization accelerates the main loop, the relative cost of compression grows more significant, so compression performance was optimized as well.
+
 == Parallel Performance
 
 The parallel performance of the implementation was evaluated using strong- and
@@ -1681,4 +1679,4 @@ This work presented a hybrid MPI and OpenMP implementation of elastic seismic wa
 
 Using this approach, the runtime was reduced from 12374 seconds sequentially to 203 seconds using 960 cores across ten nodes, a speedup of 61 times. Compared to the diminishing returns visible already at smaller core counts, where 16 cores gave a speedup of 6.3 times, this result is reasonable given the combined overhead of OpenMP synchronization and MPI halo exchange at larger scale.
 
-LIKWID #cite(<treibig2010>) was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.
+LIKWID was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.

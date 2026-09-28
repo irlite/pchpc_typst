@@ -1,0 +1,4404 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   version="1.1"
+   width="1200"
+   height="974"
+   onload="init(evt)"
+   viewBox="0 0 1200 974"
+   id="svg216"
+   sodipodi:docname="flamegraph.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview216"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.83633163"
+     inkscape:cx="709.64672"
+     inkscape:cy="496.81249"
+     inkscape:window-width="1920"
+     inkscape:window-height="1080"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg216" />
+  <!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+  <!-- NOTES:  -->
+  <defs
+     id="defs2">
+    <linearGradient
+       id="background"
+       y1="0"
+       y2="1"
+       x1="0"
+       x2="0">
+      <stop
+         stop-color="#eeeeee"
+         offset="5%"
+         id="stop1" />
+      <stop
+         stop-color="#eeeeb0"
+         offset="95%"
+         id="stop2" />
+    </linearGradient>
+  </defs>
+  <style
+     type="text/css"
+     id="style2">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames &gt; *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+  <script
+     type="text/ecmascript"
+     id="script2"><![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]></script>
+  <rect
+     x="0.0"
+     y="0"
+     width="1200.0"
+     height="974.0"
+     fill="url(#background)"
+     id="rect2" />
+  <text
+     id="title"
+     x="600.00"
+     y="24">elastic_seq_tiled.py - Job 16284005</text>
+  <text
+     id="subtitle"
+     x="600.00"
+     y="48">CPU profile</text>
+  <text
+     id="details"
+     x="10.00"
+     y="957" />
+  <text
+     id="unzoom"
+     x="10.00"
+     y="24"
+     class="hide">Reset Zoom</text>
+  <text
+     id="search"
+     x="1090.00"
+     y="24">Search</text>
+  <text
+     id="ignorecase"
+     x="1174.00"
+     y="24">ic</text>
+  <text
+     id="matched"
+     x="1090.00"
+     y="957" />
+  <g
+     id="frames">
+    <g
+       id="g3">
+      <title
+         id="title2">__pyx_pf_4h5py_3h5d_9DatasetID_2write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="221"
+         width="0.2"
+         height="15.0"
+         fill="rgb(236,143,34)"
+         rx="2"
+         ry="2"
+         id="rect3" />
+      <text
+         x="17.96"
+         y="231.5"
+         id="text3" />
+    </g>
+    <g
+       id="g4">
+      <title
+         id="title3">slot_mp_ass_subscript (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="877"
+         width="4.2"
+         height="15.0"
+         fill="rgb(223,86,20)"
+         rx="2"
+         ry="2"
+         id="rect4" />
+      <text
+         x="19.14"
+         y="887.5"
+         id="text4" />
+    </g>
+    <g
+       id="g5">
+      <title
+         id="title4">_PyEval_EvalFrameDefault (2,606,145,243 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="445"
+         width="0.1"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect5" />
+      <text
+         x="25.07"
+         y="455.5"
+         id="text5" />
+    </g>
+    <g
+       id="g6">
+      <title
+         id="title5">_PyObject_MakeTpCall (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="413"
+         width="0.2"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect6" />
+      <text
+         x="17.96"
+         y="423.5"
+         id="text6" />
+    </g>
+    <g
+       id="g7">
+      <title
+         id="title6">H5VL__native_dataset_write (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="317"
+         width="4.2"
+         height="15.0"
+         fill="rgb(246,192,45)"
+         rx="2"
+         ry="2"
+         id="rect7" />
+      <text
+         x="19.14"
+         y="327.5"
+         id="text7" />
+    </g>
+    <g
+       id="g8">
+      <title
+         id="title7">_PyObject_VectorcallTstate (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="813"
+         width="4.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect8" />
+      <text
+         x="19.14"
+         y="823.5"
+         id="text8" />
+    </g>
+    <g
+       id="g9">
+      <title
+         id="title8">H5VL_dataset_write (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="333"
+         width="4.2"
+         height="15.0"
+         fill="rgb(253,224,53)"
+         rx="2"
+         ry="2"
+         id="rect9" />
+      <text
+         x="19.14"
+         y="343.5"
+         id="text9" />
+    </g>
+    <g
+       id="g10">
+      <title
+         id="title9">__Pyx_PyVectorcall_FastCallDict_kw (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="269"
+         width="0.2"
+         height="15.0"
+         fill="rgb(219,64,15)"
+         rx="2"
+         ry="2"
+         id="rect10" />
+      <text
+         x="17.96"
+         y="279.5"
+         id="text10" />
+    </g>
+    <g
+       id="g11">
+      <title
+         id="title10">Py_RunMain (28,560,049,056,057 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="829"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(242,172,41)"
+         rx="2"
+         ry="2"
+         id="rect11" />
+      <text
+         x="24.82"
+         y="839.5"
+         id="text11">Py_RunMain</text>
+    </g>
+    <g
+       id="g12">
+      <title
+         id="title11">run_eval_code_obj (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="701"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(240,164,39)"
+         rx="2"
+         ry="2"
+         id="rect12" />
+      <text
+         x="24.82"
+         y="711.5"
+         id="text12">run_eval_code_obj</text>
+    </g>
+    <g
+       id="g13">
+      <title
+         id="title12">_PyEval_EvalFrameDefault (101,842,011,793 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="893"
+         width="4.2"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect13" />
+      <text
+         x="19.14"
+         y="903.5"
+         id="text13" />
+    </g>
+    <g
+       id="g14">
+      <title
+         id="title13">_PyObject_MakeTpCall (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="797"
+         width="4.2"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect14" />
+      <text
+         x="19.14"
+         y="807.5"
+         id="text14" />
+    </g>
+    <g
+       id="g15">
+      <title
+         id="title14">_PyObject_VectorcallTstate (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="637"
+         width="0.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect15" />
+      <text
+         x="17.96"
+         y="647.5"
+         id="text15" />
+    </g>
+    <g
+       id="g16">
+      <title
+         id="title15">_PyEval_EvalFrame (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="717"
+         width="0.3"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect16" />
+      <text
+         x="17.93"
+         y="727.5"
+         id="text16" />
+    </g>
+    <g
+       id="g17">
+      <title
+         id="title16">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="541"
+         width="4.2"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect17" />
+      <text
+         x="19.14"
+         y="551.5"
+         id="text17" />
+    </g>
+    <g
+       id="g18">
+      <title
+         id="title17">__Pyx_CyFunction_CallMethod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="637"
+         width="1.5"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect18" />
+      <text
+         x="23.31"
+         y="647.5"
+         id="text18" />
+    </g>
+    <g
+       id="g19">
+      <title
+         id="title18">H5D__chunk_write (101,707,507,048 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="285"
+         width="4.2"
+         height="15.0"
+         fill="rgb(221,76,18)"
+         rx="2"
+         ry="2"
+         id="rect19" />
+      <text
+         x="19.14"
+         y="295.5"
+         id="text19" />
+    </g>
+    <g
+       id="g20">
+      <title
+         id="title19">_PyRun_AnyFileObject (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="829"
+         width="0.3"
+         height="15.0"
+         fill="rgb(229,112,26)"
+         rx="2"
+         ry="2"
+         id="rect20" />
+      <text
+         x="17.93"
+         y="839.5"
+         id="text20" />
+    </g>
+    <g
+       id="g21">
+      <title
+         id="title20">_PyObject_VectorcallTstate (2,714,075,912 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="493"
+         width="0.1"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect21" />
+      <text
+         x="25.07"
+         y="503.5"
+         id="text21" />
+    </g>
+    <g
+       id="g22">
+      <title
+         id="title21">_PyObject_GenericGetAttrWithDict (3,234,358,734 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="445"
+         width="0.2"
+         height="15.0"
+         fill="rgb(206,6,1)"
+         rx="2"
+         ry="2"
+         id="rect22" />
+      <text
+         x="25.24"
+         y="455.5"
+         id="text22" />
+    </g>
+    <g
+       id="g23">
+      <title
+         id="title22">__Pyx_CyFunction_CallAsMethod (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="781"
+         width="4.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect23" />
+      <text
+         x="19.14"
+         y="791.5"
+         id="text23" />
+    </g>
+    <g
+       id="g24">
+      <title
+         id="title23">__Pyx_PyObject_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="589"
+         width="1.5"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect24" />
+      <text
+         x="23.31"
+         y="599.5"
+         id="text24" />
+    </g>
+    <g
+       id="g25">
+      <title
+         id="title24">pyrun_file (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="733"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(254,228,54)"
+         rx="2"
+         ry="2"
+         id="rect25" />
+      <text
+         x="24.82"
+         y="743.5"
+         id="text25">pyrun_file</text>
+    </g>
+    <g
+       id="g26">
+      <title
+         id="title25">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="525"
+         width="4.2"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect26" />
+      <text
+         x="19.14"
+         y="535.5"
+         id="text26" />
+    </g>
+    <g
+       id="g27">
+      <title
+         id="title26">__Pyx_PyVectorcall_FastCallDict (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="365"
+         width="1.5"
+         height="15.0"
+         fill="rgb(242,173,41)"
+         rx="2"
+         ry="2"
+         id="rect27" />
+      <text
+         x="23.31"
+         y="375.5"
+         id="text27" />
+    </g>
+    <g
+       id="g28">
+      <title
+         id="title27">ffi_call (28,526,436,759,272 samples, 98.88%)</title>
+      <rect
+         x="22.4"
+         y="557"
+         width="1166.8"
+         height="15.0"
+         fill="rgb(242,171,41)"
+         rx="2"
+         ry="2"
+         id="rect28" />
+      <text
+         x="25.43"
+         y="567.5"
+         id="text28">ffi_call</text>
+    </g>
+    <g
+       id="g29">
+      <title
+         id="title28">_PyEval_Vector (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="733"
+         width="0.3"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect29" />
+      <text
+         x="17.93"
+         y="743.5"
+         id="text29" />
+    </g>
+    <g
+       id="g30">
+      <title
+         id="title29">H5D__write (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="301"
+         width="4.2"
+         height="15.0"
+         fill="rgb(254,226,54)"
+         rx="2"
+         ry="2"
+         id="rect30" />
+      <text
+         x="19.14"
+         y="311.5"
+         id="text30" />
+    </g>
+    <g
+       id="g31">
+      <title
+         id="title30">H5D__write_api_common.constprop.0 (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="157"
+         width="0.2"
+         height="15.0"
+         fill="rgb(241,168,40)"
+         rx="2"
+         ry="2"
+         id="rect31" />
+      <text
+         x="17.96"
+         y="167.5"
+         id="text31" />
+    </g>
+    <g
+       id="g32">
+      <title
+         id="title31">__Pyx_PyObject_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="397"
+         width="1.5"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect32" />
+      <text
+         x="23.31"
+         y="407.5"
+         id="text32" />
+    </g>
+    <g
+       id="g33">
+      <title
+         id="title32">_PyEval_Vector (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="541"
+         width="1.5"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect33" />
+      <text
+         x="23.31"
+         y="551.5"
+         id="text33" />
+    </g>
+    <g
+       id="g34">
+      <title
+         id="title33">run_mod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="861"
+         width="1.5"
+         height="15.0"
+         fill="rgb(229,114,27)"
+         rx="2"
+         ry="2"
+         id="rect34" />
+      <text
+         x="23.31"
+         y="871.5"
+         id="text34" />
+    </g>
+    <g
+       id="g35">
+      <title
+         id="title34">__Pyx_PyVectorcall_FastCallDict_kw (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="349"
+         width="1.5"
+         height="15.0"
+         fill="rgb(219,64,15)"
+         rx="2"
+         ry="2"
+         id="rect35" />
+      <text
+         x="23.31"
+         y="359.5"
+         id="text35" />
+    </g>
+    <g
+       id="g36">
+      <title
+         id="title35">_PyEval_EvalFrameDefault (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="637"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect36" />
+      <text
+         x="24.82"
+         y="647.5"
+         id="text36">_PyEval_EvalFrameDefault</text>
+    </g>
+    <g
+       id="g37">
+      <title
+         id="title36">vectorcall_method (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="669"
+         width="0.2"
+         height="15.0"
+         fill="rgb(240,163,39)"
+         rx="2"
+         ry="2"
+         id="rect37" />
+      <text
+         x="17.96"
+         y="679.5"
+         id="text37" />
+    </g>
+    <g
+       id="g38">
+      <title
+         id="title37">__Pyx_CyFunction_CallMethod (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="557"
+         width="4.2"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect38" />
+      <text
+         x="19.14"
+         y="567.5"
+         id="text38" />
+    </g>
+    <g
+       id="g39">
+      <title
+         id="title38">__Pyx_PyObject_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="317"
+         width="0.2"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect39" />
+      <text
+         x="17.96"
+         y="327.5"
+         id="text39" />
+    </g>
+    <g
+       id="g40">
+      <title
+         id="title39">H5VM_memcpyvv (33,263,832,984 samples, 0.12%)</title>
+      <rect
+         x="20.4"
+         y="109"
+         width="1.4"
+         height="15.0"
+         fill="rgb(209,20,4)"
+         rx="2"
+         ry="2"
+         id="rect40" />
+      <text
+         x="23.41"
+         y="119.5"
+         id="text40" />
+    </g>
+    <g
+       id="g41">
+      <title
+         id="title40">_PyEval_EvalFrame (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="525"
+         width="1.5"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect41" />
+      <text
+         x="23.31"
+         y="535.5"
+         id="text41" />
+    </g>
+    <g
+       id="g42">
+      <title
+         id="title41">_contig_to_contig (14,801,051,141 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="557"
+         width="0.6"
+         height="15.0"
+         fill="rgb(235,141,33)"
+         rx="2"
+         ry="2"
+         id="rect42" />
+      <text
+         x="1192.26"
+         y="567.5"
+         id="text42" />
+    </g>
+    <g
+       id="g43">
+      <title
+         id="title42">PyVectorcall_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="573"
+         width="1.5"
+         height="15.0"
+         fill="rgb(234,137,32)"
+         rx="2"
+         ry="2"
+         id="rect43" />
+      <text
+         x="23.31"
+         y="583.5"
+         id="text43" />
+    </g>
+    <g
+       id="g44">
+      <title
+         id="title43">__memcpy_avx512_unaligned_erms (33,081,646,372 samples, 0.11%)</title>
+      <rect
+         x="20.4"
+         y="93"
+         width="1.4"
+         height="15.0"
+         fill="rgb(214,43,10)"
+         rx="2"
+         ry="2"
+         id="rect44" />
+      <text
+         x="23.42"
+         y="103.5"
+         id="text44" />
+    </g>
+    <g
+       id="g45">
+      <title
+         id="title44">H5D__chunk_lock.isra.0 (101,689,644,457 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="269"
+         width="4.2"
+         height="15.0"
+         fill="rgb(222,81,19)"
+         rx="2"
+         ry="2"
+         id="rect45" />
+      <text
+         x="19.14"
+         y="279.5"
+         id="text45" />
+    </g>
+    <g
+       id="g46">
+      <title
+         id="title45">ConvParam (3,101,738,011 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="573"
+         width="0.1"
+         height="15.0"
+         fill="rgb(230,116,27)"
+         rx="2"
+         ry="2"
+         id="rect46" />
+      <text
+         x="25.06"
+         y="583.5"
+         id="text46" />
+    </g>
+    <g
+       id="g47">
+      <title
+         id="title46">_PyEval_Vector (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="653"
+         width="4.2"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect47" />
+      <text
+         x="19.14"
+         y="663.5"
+         id="text47" />
+    </g>
+    <g
+       id="g48">
+      <title
+         id="title47">PyArray_NewCopy (14,823,828,188 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="605"
+         width="0.6"
+         height="15.0"
+         fill="rgb(220,70,16)"
+         rx="2"
+         ry="2"
+         id="rect48" />
+      <text
+         x="1192.26"
+         y="615.5"
+         id="text48" />
+    </g>
+    <g
+       id="g49">
+      <title
+         id="title48">ffi_call_int (28,526,413,918,593 samples, 98.88%)</title>
+      <rect
+         x="22.4"
+         y="541"
+         width="1166.8"
+         height="15.0"
+         fill="rgb(240,162,38)"
+         rx="2"
+         ry="2"
+         id="rect49" />
+      <text
+         x="25.43"
+         y="551.5"
+         id="text49">ffi_call_int</text>
+    </g>
+    <g
+       id="g50">
+      <title
+         id="title49">H5D__write_api_common.constprop.0 (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="349"
+         width="4.2"
+         height="15.0"
+         fill="rgb(241,168,40)"
+         rx="2"
+         ry="2"
+         id="rect50" />
+      <text
+         x="19.14"
+         y="359.5"
+         id="text50" />
+    </g>
+    <g
+       id="g51">
+      <title
+         id="title50">H5D__write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="189"
+         width="1.5"
+         height="15.0"
+         fill="rgb(254,226,54)"
+         rx="2"
+         ry="2"
+         id="rect51" />
+      <text
+         x="23.31"
+         y="199.5"
+         id="text51" />
+    </g>
+    <g
+       id="g52">
+      <title
+         id="title51">_PyObject_VectorcallTstate (4,711,605,768 samples, 0.02%)</title>
+      <rect
+         x="22.2"
+         y="557"
+         width="0.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect52" />
+      <text
+         x="25.19"
+         y="567.5"
+         id="text52" />
+    </g>
+    <g
+       id="g53">
+      <title
+         id="title52">LZ4_getIndexOnHash (5,393,828,177 samples, 0.02%)</title>
+      <rect
+         x="13.7"
+         y="829"
+         width="0.2"
+         height="15.0"
+         fill="rgb(241,166,39)"
+         rx="2"
+         ry="2"
+         id="rect53" />
+      <text
+         x="16.73"
+         y="839.5"
+         id="text53" />
+    </g>
+    <g
+       id="g54">
+      <title
+         id="title53">pymain_run_python (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="877"
+         width="0.3"
+         height="15.0"
+         fill="rgb(254,228,54)"
+         rx="2"
+         ry="2"
+         id="rect54" />
+      <text
+         x="17.93"
+         y="887.5"
+         id="text54" />
+    </g>
+    <g
+       id="g55">
+      <title
+         id="title54">H5Z__filter_shuffle (101,321,208,597 samples, 0.35%)</title>
+      <rect
+         x="16.2"
+         y="205"
+         width="4.1"
+         height="15.0"
+         fill="rgb(222,78,18)"
+         rx="2"
+         ry="2"
+         id="rect55" />
+      <text
+         x="19.15"
+         y="215.5"
+         id="text55" />
+    </g>
+    <g
+       id="g56">
+      <title
+         id="title55">_PyObject_VectorcallTstate (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="829"
+         width="4.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect56" />
+      <text
+         x="19.14"
+         y="839.5"
+         id="text56" />
+    </g>
+    <g
+       id="g57">
+      <title
+         id="title56">_PyObject_VectorcallTstate (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="701"
+         width="1.5"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect57" />
+      <text
+         x="23.31"
+         y="711.5"
+         id="text57" />
+    </g>
+    <g
+       id="g58">
+      <title
+         id="title57">H5D__write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="109"
+         width="0.2"
+         height="15.0"
+         fill="rgb(254,226,54)"
+         rx="2"
+         ry="2"
+         id="rect58" />
+      <text
+         x="17.96"
+         y="119.5"
+         id="text58" />
+    </g>
+    <g
+       id="g59">
+      <title
+         id="title58">run_eval_code_obj (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="765"
+         width="0.3"
+         height="15.0"
+         fill="rgb(240,164,39)"
+         rx="2"
+         ry="2"
+         id="rect59" />
+      <text
+         x="17.93"
+         y="775.5"
+         id="text59" />
+    </g>
+    <g
+       id="g60">
+      <title
+         id="title59">H5D__select_write (33,263,832,984 samples, 0.12%)</title>
+      <rect
+         x="20.4"
+         y="157"
+         width="1.4"
+         height="15.0"
+         fill="rgb(206,5,1)"
+         rx="2"
+         ry="2"
+         id="rect60" />
+      <text
+         x="23.41"
+         y="167.5"
+         id="text60" />
+    </g>
+    <g
+       id="g61">
+      <title
+         id="title60">_PyEval_EvalFrame (2,606,145,243 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="461"
+         width="0.1"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect61" />
+      <text
+         x="25.07"
+         y="471.5"
+         id="text61" />
+    </g>
+    <g
+       id="g62">
+      <title
+         id="title61">_PyEval_EvalFrame (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="797"
+         width="1.5"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect62" />
+      <text
+         x="23.31"
+         y="807.5"
+         id="text62" />
+    </g>
+    <g
+       id="g63">
+      <title
+         id="title62">__memset_avx512_unaligned_erms (5,043,254,548 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="61"
+         width="0.2"
+         height="15.0"
+         fill="rgb(214,43,10)"
+         rx="2"
+         ry="2"
+         id="rect63" />
+      <text
+         x="17.97"
+         y="71.5"
+         id="text63" />
+    </g>
+    <g
+       id="g64">
+      <title
+         id="title63">_PyObject_VectorcallTstate (3,982,226,612 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="525"
+         width="0.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect64" />
+      <text
+         x="25.22"
+         y="535.5"
+         id="text64" />
+    </g>
+    <g
+       id="g65">
+      <title
+         id="title64">python (28,850,178,938,056 samples, 100.00%)</title>
+      <rect
+         x="10.0"
+         y="909"
+         width="1180.0"
+         height="15.0"
+         fill="rgb(209,21,5)"
+         rx="2"
+         ry="2"
+         id="rect65" />
+      <text
+         x="13.00"
+         y="919.5"
+         id="text65">python</text>
+    </g>
+    <g
+       id="g66">
+      <title
+         id="title65">method_vectorcall (4,004,986,304 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="541"
+         width="0.2"
+         height="15.0"
+         fill="rgb(240,163,39)"
+         rx="2"
+         ry="2"
+         id="rect66" />
+      <text
+         x="25.22"
+         y="551.5"
+         id="text66" />
+    </g>
+    <g
+       id="g67">
+      <title
+         id="title66">_PyEval_EvalFrameDefault (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="429"
+         width="0.2"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect67" />
+      <text
+         x="17.96"
+         y="439.5"
+         id="text67" />
+    </g>
+    <g
+       id="g68">
+      <title
+         id="title67">LZ4_NbCommonBytes (2,690,178,943 samples, 0.01%)</title>
+      <rect
+         x="13.4"
+         y="813"
+         width="0.1"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect68" />
+      <text
+         x="16.41"
+         y="823.5"
+         id="text68" />
+    </g>
+    <g
+       id="g69">
+      <title
+         id="title68">__Pyx_CyFunction_CallMethod (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="365"
+         width="0.2"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect69" />
+      <text
+         x="17.96"
+         y="375.5"
+         id="text69" />
+    </g>
+    <g
+       id="g70">
+      <title
+         id="title69">PyEval_EvalCode (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="829"
+         width="1.5"
+         height="15.0"
+         fill="rgb(238,154,36)"
+         rx="2"
+         ry="2"
+         id="rect70" />
+      <text
+         x="23.31"
+         y="839.5"
+         id="text70" />
+    </g>
+    <g
+       id="g71">
+      <title
+         id="title70">_PyRun_SimpleFileObject (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="813"
+         width="0.3"
+         height="15.0"
+         fill="rgb(249,203,48)"
+         rx="2"
+         ry="2"
+         id="rect71" />
+      <text
+         x="17.93"
+         y="823.5"
+         id="text71" />
+    </g>
+    <g
+       id="g72">
+      <title
+         id="title71">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="333"
+         width="0.2"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect72" />
+      <text
+         x="17.96"
+         y="343.5"
+         id="text72" />
+    </g>
+    <g
+       id="g73">
+      <title
+         id="title72">H5VL__native_dataset_write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="125"
+         width="0.2"
+         height="15.0"
+         fill="rgb(246,192,45)"
+         rx="2"
+         ry="2"
+         id="rect73" />
+      <text
+         x="17.96"
+         y="135.5"
+         id="text73" />
+    </g>
+    <g
+       id="g74">
+      <title
+         id="title73">_PyObject_MakeTpCall (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="685"
+         width="1.5"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect74" />
+      <text
+         x="23.31"
+         y="695.5"
+         id="text74" />
+    </g>
+    <g
+       id="g75">
+      <title
+         id="title74">__Pyx_PyVectorcall_FastCallDict (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="285"
+         width="0.2"
+         height="15.0"
+         fill="rgb(242,173,41)"
+         rx="2"
+         ry="2"
+         id="rect75" />
+      <text
+         x="17.96"
+         y="295.5"
+         id="text75" />
+    </g>
+    <g
+       id="g76">
+      <title
+         id="title75">Py_BytesMain (28,560,049,056,057 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="861"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(235,141,33)"
+         rx="2"
+         ry="2"
+         id="rect76" />
+      <text
+         x="24.82"
+         y="871.5"
+         id="text76">Py_BytesMain</text>
+    </g>
+    <g
+       id="g77">
+      <title
+         id="title76">H5D__chunk_flush_entry (101,689,644,457 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="237"
+         width="4.2"
+         height="15.0"
+         fill="rgb(235,140,33)"
+         rx="2"
+         ry="2"
+         id="rect77" />
+      <text
+         x="19.14"
+         y="247.5"
+         id="text77" />
+    </g>
+    <g
+       id="g78">
+      <title
+         id="title77">_PyEval_EvalFrameDefault (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="701"
+         width="0.3"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect78" />
+      <text
+         x="17.93"
+         y="711.5"
+         id="text78" />
+    </g>
+    <g
+       id="g79">
+      <title
+         id="title78">pymain_run_file_obj (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="781"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(222,81,19)"
+         rx="2"
+         ry="2"
+         id="rect79" />
+      <text
+         x="24.82"
+         y="791.5"
+         id="text79">pymain_run_file_obj</text>
+    </g>
+    <g
+       id="g80">
+      <title
+         id="title79">H5VL_dataset_write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="141"
+         width="0.2"
+         height="15.0"
+         fill="rgb(253,224,53)"
+         rx="2"
+         ry="2"
+         id="rect80" />
+      <text
+         x="17.96"
+         y="151.5"
+         id="text80" />
+    </g>
+    <g
+       id="g81">
+      <title
+         id="title80">PyObject_CallOneArg (4,711,605,768 samples, 0.02%)</title>
+      <rect
+         x="22.2"
+         y="573"
+         width="0.2"
+         height="15.0"
+         fill="rgb(232,124,29)"
+         rx="2"
+         ry="2"
+         id="rect81" />
+      <text
+         x="25.19"
+         y="583.5"
+         id="text81" />
+    </g>
+    <g
+       id="g82">
+      <title
+         id="title81">__pyx_f_4h5py_4defs_H5Dwrite (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="381"
+         width="4.2"
+         height="15.0"
+         fill="rgb(218,63,15)"
+         rx="2"
+         ry="2"
+         id="rect82" />
+      <text
+         x="19.14"
+         y="391.5"
+         id="text82" />
+    </g>
+    <g
+       id="g83">
+      <title
+         id="title82">__pyx_f_4h5py_4defs_H5Dwrite (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="269"
+         width="1.5"
+         height="15.0"
+         fill="rgb(218,63,15)"
+         rx="2"
+         ry="2"
+         id="rect83" />
+      <text
+         x="23.31"
+         y="279.5"
+         id="text83" />
+    </g>
+    <g
+       id="g84">
+      <title
+         id="title83">_PyEval_Vector (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="813"
+         width="1.5"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect84" />
+      <text
+         x="23.31"
+         y="823.5"
+         id="text84" />
+    </g>
+    <g
+       id="g85">
+      <title
+         id="title84">pymain_run_file_obj (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="845"
+         width="0.3"
+         height="15.0"
+         fill="rgb(222,81,19)"
+         rx="2"
+         ry="2"
+         id="rect85" />
+      <text
+         x="17.93"
+         y="855.5"
+         id="text85" />
+    </g>
+    <g
+       id="g86">
+      <title
+         id="title85">__Pyx_PyObject_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="701"
+         width="4.2"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect86" />
+      <text
+         x="19.14"
+         y="711.5"
+         id="text86" />
+    </g>
+    <g
+       id="g87">
+      <title
+         id="title86">__Pyx_CyFunction_CallAsMethod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="669"
+         width="1.5"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect87" />
+      <text
+         x="23.31"
+         y="679.5"
+         id="text87" />
+    </g>
+    <g
+       id="g88">
+      <title
+         id="title87">PyEval_EvalCode (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="685"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(238,154,36)"
+         rx="2"
+         ry="2"
+         id="rect88" />
+      <text
+         x="24.82"
+         y="695.5"
+         id="text88">PyEval_EvalCode</text>
+    </g>
+    <g
+       id="g89">
+      <title
+         id="title88">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="413"
+         width="1.5"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect89" />
+      <text
+         x="23.31"
+         y="423.5"
+         id="text89" />
+    </g>
+    <g
+       id="g90">
+      <title
+         id="title89">_PyEval_EvalFrame (3,936,701,302 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="493"
+         width="0.2"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect90" />
+      <text
+         x="25.22"
+         y="503.5"
+         id="text90" />
+    </g>
+    <g
+       id="g91">
+      <title
+         id="title90">LZ4_hashPosition (15,543,690,361 samples, 0.05%)</title>
+      <rect
+         x="13.9"
+         y="829"
+         width="0.7"
+         height="15.0"
+         fill="rgb(218,60,14)"
+         rx="2"
+         ry="2"
+         id="rect91" />
+      <text
+         x="16.95"
+         y="839.5"
+         id="text91" />
+    </g>
+    <g
+       id="g92">
+      <title
+         id="title91">_PyRun_AnyFileObject (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="765"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(229,112,26)"
+         rx="2"
+         ry="2"
+         id="rect92" />
+      <text
+         x="24.82"
+         y="775.5"
+         id="text92">_PyRun_AnyFileObject</text>
+    </g>
+    <g
+       id="g93">
+      <title
+         id="title92">vectorcall_unbound (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="845"
+         width="4.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect93" />
+      <text
+         x="19.14"
+         y="855.5"
+         id="text93" />
+    </g>
+    <g
+       id="g94">
+      <title
+         id="title93">H5Dwrite (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="365"
+         width="4.2"
+         height="15.0"
+         fill="rgb(231,122,29)"
+         rx="2"
+         ry="2"
+         id="rect94" />
+      <text
+         x="19.14"
+         y="375.5"
+         id="text94" />
+    </g>
+    <g
+       id="g95">
+      <title
+         id="title94">H5D__chunk_write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="173"
+         width="1.5"
+         height="15.0"
+         fill="rgb(221,76,18)"
+         rx="2"
+         ry="2"
+         id="rect95" />
+      <text
+         x="23.31"
+         y="183.5"
+         id="text95" />
+    </g>
+    <g
+       id="g96">
+      <title
+         id="title95">_PyEval_EvalFrameDefault (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="621"
+         width="4.2"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect96" />
+      <text
+         x="19.14"
+         y="631.5"
+         id="text96" />
+    </g>
+    <g
+       id="g97">
+      <title
+         id="title96">PyArray_AssignArray (14,801,051,141 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="589"
+         width="0.6"
+         height="15.0"
+         fill="rgb(239,158,37)"
+         rx="2"
+         ry="2"
+         id="rect97" />
+      <text
+         x="1192.26"
+         y="599.5"
+         id="text97" />
+    </g>
+    <g
+       id="g98">
+      <title
+         id="title97">__Pyx_PyObject_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="509"
+         width="4.2"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect98" />
+      <text
+         x="19.14"
+         y="519.5"
+         id="text98" />
+    </g>
+    <g
+       id="g99">
+      <title
+         id="title98">pymain_run_file (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="797"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(221,74,17)"
+         rx="2"
+         ry="2"
+         id="rect99" />
+      <text
+         x="24.82"
+         y="807.5"
+         id="text99">pymain_run_file</text>
+    </g>
+    <g
+       id="g100">
+      <title
+         id="title99">H5D__fill_init (2,460,458,778 samples, 0.01%)</title>
+      <rect
+         x="20.3"
+         y="141"
+         width="0.1"
+         height="15.0"
+         fill="rgb(226,99,23)"
+         rx="2"
+         ry="2"
+         id="rect100" />
+      <text
+         x="23.31"
+         y="151.5"
+         id="text100" />
+    </g>
+    <g
+       id="g101">
+      <title
+         id="title100">array_ctypes_get (2,854,791,102 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="429"
+         width="0.2"
+         height="15.0"
+         fill="rgb(221,77,18)"
+         rx="2"
+         ry="2"
+         id="rect101" />
+      <text
+         x="25.25"
+         y="439.5"
+         id="text101" />
+    </g>
+    <g
+       id="g102">
+      <title
+         id="title101">__libc_start_main (28,560,049,056,057 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="877"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(236,142,34)"
+         rx="2"
+         ry="2"
+         id="rect102" />
+      <text
+         x="24.82"
+         y="887.5"
+         id="text102">__libc_start_main</text>
+    </g>
+    <g
+       id="g103">
+      <title
+         id="title102">H5D__select_io (33,263,832,984 samples, 0.12%)</title>
+      <rect
+         x="20.4"
+         y="141"
+         width="1.4"
+         height="15.0"
+         fill="rgb(246,188,45)"
+         rx="2"
+         ry="2"
+         id="rect103" />
+      <text
+         x="23.41"
+         y="151.5"
+         id="text103" />
+    </g>
+    <g
+       id="g104">
+      <title
+         id="title103">_PyEval_EvalFrame (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="445"
+         width="0.2"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect104" />
+      <text
+         x="17.96"
+         y="455.5"
+         id="text104" />
+    </g>
+    <g
+       id="g105">
+      <title
+         id="title104">__pyx_pw_4h5py_3h5d_9DatasetID_3write (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="429"
+         width="4.2"
+         height="15.0"
+         fill="rgb(219,68,16)"
+         rx="2"
+         ry="2"
+         id="rect105" />
+      <text
+         x="19.14"
+         y="439.5"
+         id="text105" />
+    </g>
+    <g
+       id="g106">
+      <title
+         id="title105">__Pyx_CyFunction_CallMethod (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="749"
+         width="4.2"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect106" />
+      <text
+         x="19.14"
+         y="759.5"
+         id="text106" />
+    </g>
+    <g
+       id="g107">
+      <title
+         id="title106">_PyObject_MakeTpCall (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="605"
+         width="0.2"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect107" />
+      <text
+         x="17.96"
+         y="615.5"
+         id="text107" />
+    </g>
+    <g
+       id="g108">
+      <title
+         id="title107">H5VL_dataset_write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="221"
+         width="1.5"
+         height="15.0"
+         fill="rgb(253,224,53)"
+         rx="2"
+         ry="2"
+         id="rect108" />
+      <text
+         x="23.31"
+         y="231.5"
+         id="text108" />
+    </g>
+    <g
+       id="g109">
+      <title
+         id="title108">LZ4_count (28,673,937,814 samples, 0.10%)</title>
+      <rect
+         x="12.6"
+         y="829"
+         width="1.1"
+         height="15.0"
+         fill="rgb(219,65,15)"
+         rx="2"
+         ry="2"
+         id="rect109" />
+      <text
+         x="15.55"
+         y="839.5"
+         id="text109" />
+    </g>
+    <g
+       id="g110">
+      <title
+         id="title109">__Pyx_CyFunction_CallMethod (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="557"
+         width="0.2"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect110" />
+      <text
+         x="17.96"
+         y="567.5"
+         id="text110" />
+    </g>
+    <g
+       id="g111">
+      <title
+         id="title110">H5D__write_api_common.constprop.0 (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="237"
+         width="1.5"
+         height="15.0"
+         fill="rgb(241,168,40)"
+         rx="2"
+         ry="2"
+         id="rect111" />
+      <text
+         x="23.31"
+         y="247.5"
+         id="text111" />
+    </g>
+    <g
+       id="g112">
+      <title
+         id="title111">_PyObject_GenericGetAttrWithDict (2,805,370,758 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="525"
+         width="0.1"
+         height="15.0"
+         fill="rgb(206,6,1)"
+         rx="2"
+         ry="2"
+         id="rect112" />
+      <text
+         x="25.07"
+         y="535.5"
+         id="text112" />
+    </g>
+    <g
+       id="g113">
+      <title
+         id="title112">__Pyx_PyVectorcall_FastCallDict (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="477"
+         width="4.2"
+         height="15.0"
+         fill="rgb(242,173,41)"
+         rx="2"
+         ry="2"
+         id="rect113" />
+      <text
+         x="19.14"
+         y="487.5"
+         id="text113" />
+    </g>
+    <g
+       id="g114">
+      <title
+         id="title113">run_mod (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="717"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(229,114,27)"
+         rx="2"
+         ry="2"
+         id="rect114" />
+      <text
+         x="24.82"
+         y="727.5"
+         id="text114">run_mod</text>
+    </g>
+    <g
+       id="g115">
+      <title
+         id="title114">vectorcall_method (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="749"
+         width="1.5"
+         height="15.0"
+         fill="rgb(240,163,39)"
+         rx="2"
+         ry="2"
+         id="rect115" />
+      <text
+         x="23.31"
+         y="759.5"
+         id="text115" />
+    </g>
+    <g
+       id="g116">
+      <title
+         id="title115">_PyVectorcall_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="669"
+         width="4.2"
+         height="15.0"
+         fill="rgb(221,74,17)"
+         rx="2"
+         ry="2"
+         id="rect116" />
+      <text
+         x="19.14"
+         y="679.5"
+         id="text116" />
+    </g>
+    <g
+       id="g117">
+      <title
+         id="title116">__Pyx_CyFunction_Vectorcall_FASTCALL_KEYWORDS (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="445"
+         width="4.2"
+         height="15.0"
+         fill="rgb(249,206,49)"
+         rx="2"
+         ry="2"
+         id="rect117" />
+      <text
+         x="19.14"
+         y="455.5"
+         id="text117" />
+    </g>
+    <g
+       id="g118">
+      <title
+         id="title117">_PyObject_VectorcallTstate (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="621"
+         width="0.2"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect118" />
+      <text
+         x="17.96"
+         y="631.5"
+         id="text118" />
+    </g>
+    <g
+       id="g119">
+      <title
+         id="title118">__Pyx_CyFunction_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="653"
+         width="1.5"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect119" />
+      <text
+         x="23.31"
+         y="663.5"
+         id="text119" />
+    </g>
+    <g
+       id="g120">
+      <title
+         id="title119">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="525"
+         width="0.2"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect120" />
+      <text
+         x="17.96"
+         y="535.5"
+         id="text120" />
+    </g>
+    <g
+       id="g121">
+      <title
+         id="title120">[unknown] (23,019,148,116 samples, 0.08%)</title>
+      <rect
+         x="15.2"
+         y="893"
+         width="0.9"
+         height="15.0"
+         fill="rgb(210,24,5)"
+         rx="2"
+         ry="2"
+         id="rect121" />
+      <text
+         x="18.19"
+         y="903.5"
+         id="text121" />
+    </g>
+    <g
+       id="g122">
+      <title
+         id="title121">LZ4_read_ARCH (5,141,613,551 samples, 0.02%)</title>
+      <rect
+         x="13.5"
+         y="813"
+         width="0.2"
+         height="15.0"
+         fill="rgb(218,63,15)"
+         rx="2"
+         ry="2"
+         id="rect122" />
+      <text
+         x="16.52"
+         y="823.5"
+         id="text122" />
+    </g>
+    <g
+       id="g123">
+      <title
+         id="title122">_start (28,560,105,514,899 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="893"
+         width="1168.2"
+         height="15.0"
+         fill="rgb(245,185,44)"
+         rx="2"
+         ry="2"
+         id="rect123" />
+      <text
+         x="24.82"
+         y="903.5"
+         id="text123">_start</text>
+    </g>
+    <g
+       id="g124">
+      <title
+         id="title123">_PyEval_EvalFrame (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="637"
+         width="4.2"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect124" />
+      <text
+         x="19.14"
+         y="647.5"
+         id="text124" />
+    </g>
+    <g
+       id="g125">
+      <title
+         id="title124">_PyEval_Vector (3,982,226,612 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="509"
+         width="0.2"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect125" />
+      <text
+         x="25.22"
+         y="519.5"
+         id="text125" />
+    </g>
+    <g
+       id="g126">
+      <title
+         id="title125">ffi_call_unix64 (28,526,368,308,952 samples, 98.88%)</title>
+      <rect
+         x="22.4"
+         y="525"
+         width="1166.8"
+         height="15.0"
+         fill="rgb(223,87,20)"
+         rx="2"
+         ry="2"
+         id="rect126" />
+      <text
+         x="25.43"
+         y="535.5"
+         id="text126">ffi_call_unix64</text>
+    </g>
+    <g
+       id="g127">
+      <title
+         id="title126">H5Dwrite (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="173"
+         width="0.2"
+         height="15.0"
+         fill="rgb(231,122,29)"
+         rx="2"
+         ry="2"
+         id="rect127" />
+      <text
+         x="17.96"
+         y="183.5"
+         id="text127" />
+    </g>
+    <g
+       id="g128">
+      <title
+         id="title127">vectorcall_method (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="861"
+         width="4.2"
+         height="15.0"
+         fill="rgb(240,163,39)"
+         rx="2"
+         ry="2"
+         id="rect128" />
+      <text
+         x="19.14"
+         y="871.5"
+         id="text128" />
+    </g>
+    <g
+       id="g129">
+      <title
+         id="title128">LZ4_compress_generic_validated (119,460,200,189 samples, 0.41%)</title>
+      <rect
+         x="10.0"
+         y="845"
+         width="4.9"
+         height="15.0"
+         fill="rgb(235,138,33)"
+         rx="2"
+         ry="2"
+         id="rect129" />
+      <text
+         x="13.01"
+         y="855.5"
+         id="text129" />
+    </g>
+    <g
+       id="g130">
+      <title
+         id="title129">__pyx_f_4h5py_6_proxy_dset_rw (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="205"
+         width="0.2"
+         height="15.0"
+         fill="rgb(231,119,28)"
+         rx="2"
+         ry="2"
+         id="rect130" />
+      <text
+         x="17.96"
+         y="215.5"
+         id="text130" />
+    </g>
+    <g
+       id="g131">
+      <title
+         id="title130">__pyx_pf_4h5py_3h5d_9DatasetID_2write (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="413"
+         width="4.2"
+         height="15.0"
+         fill="rgb(236,143,34)"
+         rx="2"
+         ry="2"
+         id="rect131" />
+      <text
+         x="19.14"
+         y="423.5"
+         id="text131" />
+    </g>
+    <g
+       id="g132">
+      <title
+         id="title131">vectorcall_unbound (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="653"
+         width="0.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect132" />
+      <text
+         x="17.96"
+         y="663.5"
+         id="text132" />
+    </g>
+    <g
+       id="g133">
+      <title
+         id="title132">H5Dwrite (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="253"
+         width="1.5"
+         height="15.0"
+         fill="rgb(231,122,29)"
+         rx="2"
+         ry="2"
+         id="rect133" />
+      <text
+         x="23.31"
+         y="263.5"
+         id="text133" />
+    </g>
+    <g
+       id="g134">
+      <title
+         id="title133">__pyx_pw_4h5py_3h5d_9DatasetID_3write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="237"
+         width="0.2"
+         height="15.0"
+         fill="rgb(219,68,16)"
+         rx="2"
+         ry="2"
+         id="rect134" />
+      <text
+         x="17.96"
+         y="247.5"
+         id="text134" />
+    </g>
+    <g
+       id="g135">
+      <title
+         id="title134">vectorcall_unbound (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="733"
+         width="1.5"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect135" />
+      <text
+         x="23.31"
+         y="743.5"
+         id="text135" />
+    </g>
+    <g
+       id="g136">
+      <title
+         id="title135">__pyx_f_4h5py_6_proxy_dset_rw (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="285"
+         width="1.5"
+         height="15.0"
+         fill="rgb(231,119,28)"
+         rx="2"
+         ry="2"
+         id="rect136" />
+      <text
+         x="23.31"
+         y="295.5"
+         id="text136" />
+    </g>
+    <g
+       id="g137">
+      <title
+         id="title136">__Pyx_PyObject_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="509"
+         width="0.2"
+         height="15.0"
+         fill="rgb(212,34,8)"
+         rx="2"
+         ry="2"
+         id="rect137" />
+      <text
+         x="17.96"
+         y="519.5"
+         id="text137" />
+    </g>
+    <g
+       id="g138">
+      <title
+         id="title137">__pyx_pw_4h5py_3h5d_9DatasetID_3write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="317"
+         width="1.5"
+         height="15.0"
+         fill="rgb(219,68,16)"
+         rx="2"
+         ry="2"
+         id="rect138" />
+      <text
+         x="23.31"
+         y="327.5"
+         id="text138" />
+    </g>
+    <g
+       id="g139">
+      <title
+         id="title138">slot_mp_ass_subscript (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="685"
+         width="0.2"
+         height="15.0"
+         fill="rgb(223,86,20)"
+         rx="2"
+         ry="2"
+         id="rect139" />
+      <text
+         x="17.96"
+         y="695.5"
+         id="text139" />
+    </g>
+    <g
+       id="g140">
+      <title
+         id="title139">_PyEval_Vector (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="461"
+         width="0.2"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect140" />
+      <text
+         x="17.96"
+         y="471.5"
+         id="text140" />
+    </g>
+    <g
+       id="g141">
+      <title
+         id="title140">__Pyx_CyFunction_CallAsMethod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="477"
+         width="1.5"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect141" />
+      <text
+         x="23.31"
+         y="487.5"
+         id="text141" />
+    </g>
+    <g
+       id="g142">
+      <title
+         id="title141">array_ascontiguousarray (14,823,828,188 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="621"
+         width="0.6"
+         height="15.0"
+         fill="rgb(233,129,31)"
+         rx="2"
+         ry="2"
+         id="rect142" />
+      <text
+         x="1192.26"
+         y="631.5"
+         id="text142" />
+    </g>
+    <g
+       id="g143">
+      <title
+         id="title142">__Pyx_CyFunction_CallAsMethod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="381"
+         width="1.5"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect143" />
+      <text
+         x="23.31"
+         y="391.5"
+         id="text143" />
+    </g>
+    <g
+       id="g144">
+      <title
+         id="title143">raw_array_assign_array (14,801,051,141 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="573"
+         width="0.6"
+         height="15.0"
+         fill="rgb(208,16,4)"
+         rx="2"
+         ry="2"
+         id="rect144" />
+      <text
+         x="1192.26"
+         y="583.5"
+         id="text144" />
+    </g>
+    <g
+       id="g145">
+      <title
+         id="title144">slot_mp_ass_subscript (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="765"
+         width="1.5"
+         height="15.0"
+         fill="rgb(223,86,20)"
+         rx="2"
+         ry="2"
+         id="rect145" />
+      <text
+         x="23.31"
+         y="775.5"
+         id="text145" />
+    </g>
+    <g
+       id="g146">
+      <title
+         id="title145">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="717"
+         width="4.2"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect146" />
+      <text
+         x="19.14"
+         y="727.5"
+         id="text146" />
+    </g>
+    <g
+       id="g147">
+      <title
+         id="title146">__Pyx_CyFunction_Vectorcall_FASTCALL_KEYWORDS (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="333"
+         width="1.5"
+         height="15.0"
+         fill="rgb(249,206,49)"
+         rx="2"
+         ry="2"
+         id="rect147" />
+      <text
+         x="23.31"
+         y="343.5"
+         id="text147" />
+    </g>
+    <g
+       id="g148">
+      <title
+         id="title147">_PyEval_Vector (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="669"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect148" />
+      <text
+         x="24.82"
+         y="679.5"
+         id="text148">_PyEval_Vector</text>
+    </g>
+    <g
+       id="g149">
+      <title
+         id="title148">PyCFuncPtr_call (28,535,838,030,508 samples, 98.91%)</title>
+      <rect
+         x="22.0"
+         y="605"
+         width="1167.2"
+         height="15.0"
+         fill="rgb(246,190,45)"
+         rx="2"
+         ry="2"
+         id="rect149" />
+      <text
+         x="25.05"
+         y="615.5"
+         id="text149">PyCFuncPtr_call</text>
+    </g>
+    <g
+       id="g150">
+      <title
+         id="title149">_PyObject_VectorcallTstate (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="717"
+         width="1.5"
+         height="15.0"
+         fill="rgb(243,175,41)"
+         rx="2"
+         ry="2"
+         id="rect150" />
+      <text
+         x="23.31"
+         y="727.5"
+         id="text150" />
+    </g>
+    <g
+       id="g151">
+      <title
+         id="title150">__Pyx_CyFunction_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="381"
+         width="0.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect151" />
+      <text
+         x="17.96"
+         y="391.5"
+         id="text151" />
+    </g>
+    <g
+       id="g152">
+      <title
+         id="title151">LZ4_compress_fast (119,460,200,189 samples, 0.41%)</title>
+      <rect
+         x="10.0"
+         y="893"
+         width="4.9"
+         height="15.0"
+         fill="rgb(241,166,39)"
+         rx="2"
+         ry="2"
+         id="rect152" />
+      <text
+         x="13.01"
+         y="903.5"
+         id="text152" />
+    </g>
+    <g
+       id="g153">
+      <title
+         id="title152">PyEval_EvalCode (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="749"
+         width="0.3"
+         height="15.0"
+         fill="rgb(238,154,36)"
+         rx="2"
+         ry="2"
+         id="rect153" />
+      <text
+         x="17.93"
+         y="759.5"
+         id="text153" />
+    </g>
+    <g
+       id="g154">
+      <title
+         id="title153">H5D__chunk_lock.isra.0 (2,460,458,778 samples, 0.01%)</title>
+      <rect
+         x="20.3"
+         y="157"
+         width="0.1"
+         height="15.0"
+         fill="rgb(222,81,19)"
+         rx="2"
+         ry="2"
+         id="rect154" />
+      <text
+         x="23.31"
+         y="167.5"
+         id="text154" />
+    </g>
+    <g
+       id="g155">
+      <title
+         id="title154">_PyVectorcall_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="557"
+         width="1.5"
+         height="15.0"
+         fill="rgb(221,74,17)"
+         rx="2"
+         ry="2"
+         id="rect155" />
+      <text
+         x="23.31"
+         y="567.5"
+         id="text155" />
+    </g>
+    <g
+       id="g156">
+      <title
+         id="title155">H5Z_pipeline (101,434,749,219 samples, 0.35%)</title>
+      <rect
+         x="16.2"
+         y="221"
+         width="4.1"
+         height="15.0"
+         fill="rgb(244,180,43)"
+         rx="2"
+         ry="2"
+         id="rect156" />
+      <text
+         x="19.15"
+         y="231.5"
+         id="text156" />
+    </g>
+    <g
+       id="g157">
+      <title
+         id="title156">_PyObject_MakeTpCall (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="605"
+         width="4.2"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect157" />
+      <text
+         x="19.14"
+         y="615.5"
+         id="text157" />
+    </g>
+    <g
+       id="g158">
+      <title
+         id="title157">__Pyx_CyFunction_CallAsMethod (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="301"
+         width="0.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect158" />
+      <text
+         x="17.96"
+         y="311.5"
+         id="text158" />
+    </g>
+    <g
+       id="g159">
+      <title
+         id="title158">run_mod (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="781"
+         width="0.3"
+         height="15.0"
+         fill="rgb(229,114,27)"
+         rx="2"
+         ry="2"
+         id="rect159" />
+      <text
+         x="17.93"
+         y="791.5"
+         id="text159" />
+    </g>
+    <g
+       id="g160">
+      <title
+         id="title159">update_stress_velocity_seq_tiled (28,526,345,479,415 samples, 98.88%)</title>
+      <rect
+         x="22.4"
+         y="509"
+         width="1166.8"
+         height="15.0"
+         fill="rgb(210,27,6)"
+         rx="2"
+         ry="2"
+         id="rect160" />
+      <text
+         x="25.43"
+         y="519.5"
+         id="text160">update_stress_velocity_seq_tiled</text>
+    </g>
+    <g
+       id="g161">
+      <title
+         id="title160">_PyVectorcall_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="477"
+         width="0.2"
+         height="15.0"
+         fill="rgb(221,74,17)"
+         rx="2"
+         ry="2"
+         id="rect161" />
+      <text
+         x="17.96"
+         y="487.5"
+         id="text161" />
+    </g>
+    <g
+       id="g162">
+      <title
+         id="title161">_PyObject_MakeTpCall (28,537,434,289,307 samples, 98.92%)</title>
+      <rect
+         x="22.0"
+         y="621"
+         width="1167.3"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect162" />
+      <text
+         x="25.05"
+         y="631.5"
+         id="text162">_PyObject_MakeTpCall</text>
+    </g>
+    <g
+       id="g163">
+      <title
+         id="title162">pymain_run_python (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="813"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(254,228,54)"
+         rx="2"
+         ry="2"
+         id="rect163" />
+      <text
+         x="24.82"
+         y="823.5"
+         id="text163">pymain_run_python</text>
+    </g>
+    <g
+       id="g164">
+      <title
+         id="title163">_ctypes_callproc (28,535,678,001,735 samples, 98.91%)</title>
+      <rect
+         x="22.1"
+         y="589"
+         width="1167.1"
+         height="15.0"
+         fill="rgb(218,63,15)"
+         rx="2"
+         ry="2"
+         id="rect164" />
+      <text
+         x="25.06"
+         y="599.5"
+         id="text164">_ctypes_callproc</text>
+    </g>
+    <g
+       id="g165">
+      <title
+         id="title164">PyVectorcall_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="685"
+         width="4.2"
+         height="15.0"
+         fill="rgb(234,137,32)"
+         rx="2"
+         ry="2"
+         id="rect165" />
+      <text
+         x="19.14"
+         y="695.5"
+         id="text165" />
+    </g>
+    <g
+       id="g166">
+      <title
+         id="title165">_PyRun_SimpleFileObject (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="893"
+         width="1.5"
+         height="15.0"
+         fill="rgb(249,203,48)"
+         rx="2"
+         ry="2"
+         id="rect166" />
+      <text
+         x="23.31"
+         y="903.5"
+         id="text166" />
+    </g>
+    <g
+       id="g167">
+      <title
+         id="title166">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="429"
+         width="1.5"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect167" />
+      <text
+         x="23.31"
+         y="439.5"
+         id="text167" />
+    </g>
+    <g
+       id="g168">
+      <title
+         id="title167">_PyObject_MakeTpCall (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="493"
+         width="1.5"
+         height="15.0"
+         fill="rgb(229,113,27)"
+         rx="2"
+         ry="2"
+         id="rect168" />
+      <text
+         x="23.31"
+         y="503.5"
+         id="text168" />
+    </g>
+    <g
+       id="g169">
+      <title
+         id="title168">__Pyx_CyFunction_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="765"
+         width="4.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect169" />
+      <text
+         x="19.14"
+         y="775.5"
+         id="text169" />
+    </g>
+    <g
+       id="g170">
+      <title
+         id="title169">__Pyx_CyFunction_CallMethod (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="445"
+         width="1.5"
+         height="15.0"
+         fill="rgb(218,62,14)"
+         rx="2"
+         ry="2"
+         id="rect170" />
+      <text
+         x="23.31"
+         y="455.5"
+         id="text170" />
+    </g>
+    <g
+       id="g171">
+      <title
+         id="title170">H5D__chunk_write (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="93"
+         width="0.2"
+         height="15.0"
+         fill="rgb(221,76,18)"
+         rx="2"
+         ry="2"
+         id="rect171" />
+      <text
+         x="17.96"
+         y="103.5"
+         id="text171" />
+    </g>
+    <g
+       id="g172">
+      <title
+         id="title171">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="621"
+         width="1.5"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect172" />
+      <text
+         x="23.31"
+         y="631.5"
+         id="text172" />
+    </g>
+    <g
+       id="g173">
+      <title
+         id="title172">_PyEval_EvalFrameDefault (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="781"
+         width="1.5"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect173" />
+      <text
+         x="23.31"
+         y="791.5"
+         id="text173" />
+    </g>
+    <g
+       id="g174">
+      <title
+         id="title173">ConvParam (2,942,165,985 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="557"
+         width="0.1"
+         height="15.0"
+         fill="rgb(230,116,27)"
+         rx="2"
+         ry="2"
+         id="rect174" />
+      <text
+         x="25.07"
+         y="567.5"
+         id="text174" />
+    </g>
+    <g
+       id="g175">
+      <title
+         id="title174">LZ4_compress_fast_extState (119,460,200,189 samples, 0.41%)</title>
+      <rect
+         x="10.0"
+         y="877"
+         width="4.9"
+         height="15.0"
+         fill="rgb(236,145,34)"
+         rx="2"
+         ry="2"
+         id="rect175" />
+      <text
+         x="13.01"
+         y="887.5"
+         id="text175" />
+    </g>
+    <g
+       id="g176">
+      <title
+         id="title175">pyrun_file (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="877"
+         width="1.5"
+         height="15.0"
+         fill="rgb(254,228,54)"
+         rx="2"
+         ry="2"
+         id="rect176" />
+      <text
+         x="23.31"
+         y="887.5"
+         id="text176" />
+    </g>
+    <g
+       id="g177">
+      <title
+         id="title176">__Pyx_CyFunction_Call (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="573"
+         width="4.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect177" />
+      <text
+         x="19.14"
+         y="583.5"
+         id="text177" />
+    </g>
+    <g
+       id="g178">
+      <title
+         id="title177">__Pyx_CyFunction_CallAsMethod (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="397"
+         width="0.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect178" />
+      <text
+         x="17.96"
+         y="407.5"
+         id="text178" />
+    </g>
+    <g
+       id="g179">
+      <title
+         id="title178">LZ4_compress_generic (119,460,200,189 samples, 0.41%)</title>
+      <rect
+         x="10.0"
+         y="861"
+         width="4.9"
+         height="15.0"
+         fill="rgb(233,133,31)"
+         rx="2"
+         ry="2"
+         id="rect179" />
+      <text
+         x="13.01"
+         y="871.5"
+         id="text179" />
+    </g>
+    <g
+       id="g180">
+      <title
+         id="title179">_call_function_pointer (28,526,710,250,905 samples, 98.88%)</title>
+      <rect
+         x="22.4"
+         y="573"
+         width="1166.8"
+         height="15.0"
+         fill="rgb(223,83,20)"
+         rx="2"
+         ry="2"
+         id="rect180" />
+      <text
+         x="25.42"
+         y="583.5"
+         id="text180">_call_function_pointer</text>
+    </g>
+    <g
+       id="g181">
+      <title
+         id="title180">run_eval_code_obj (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="845"
+         width="1.5"
+         height="15.0"
+         fill="rgb(240,164,39)"
+         rx="2"
+         ry="2"
+         id="rect181" />
+      <text
+         x="23.31"
+         y="855.5"
+         id="text181" />
+    </g>
+    <g
+       id="g182">
+      <title
+         id="title181">H5VL__native_dataset_write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="205"
+         width="1.5"
+         height="15.0"
+         fill="rgb(246,192,45)"
+         rx="2"
+         ry="2"
+         id="rect182" />
+      <text
+         x="23.31"
+         y="215.5"
+         id="text182" />
+    </g>
+    <g
+       id="g183">
+      <title
+         id="title182">__Pyx_CyFunction_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="573"
+         width="0.2"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect183" />
+      <text
+         x="17.96"
+         y="583.5"
+         id="text183" />
+    </g>
+    <g
+       id="g184">
+      <title
+         id="title183">_PyObject_LookupAttr (2,828,130,416 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="541"
+         width="0.1"
+         height="15.0"
+         fill="rgb(217,58,13)"
+         rx="2"
+         ry="2"
+         id="rect184" />
+      <text
+         x="25.07"
+         y="551.5"
+         id="text184" />
+    </g>
+    <g
+       id="g185">
+      <title
+         id="title184">LZ4_hash5 (15,543,690,361 samples, 0.05%)</title>
+      <rect
+         x="13.9"
+         y="813"
+         width="0.7"
+         height="15.0"
+         fill="rgb(236,142,34)"
+         rx="2"
+         ry="2"
+         id="rect185" />
+      <text
+         x="16.95"
+         y="823.5"
+         id="text185" />
+    </g>
+    <g
+       id="g186">
+      <title
+         id="title185">_PyEval_EvalFrameDefault (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="509"
+         width="1.5"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect186" />
+      <text
+         x="23.31"
+         y="519.5"
+         id="text186" />
+    </g>
+    <g
+       id="g187">
+      <title
+         id="title186">__pyx_f_4h5py_4defs_H5Dwrite (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="189"
+         width="0.2"
+         height="15.0"
+         fill="rgb(218,63,15)"
+         rx="2"
+         ry="2"
+         id="rect187" />
+      <text
+         x="17.96"
+         y="199.5"
+         id="text187" />
+    </g>
+    <g
+       id="g188">
+      <title
+         id="title187">Py_RunMain (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="893"
+         width="0.3"
+         height="15.0"
+         fill="rgb(242,172,41)"
+         rx="2"
+         ry="2"
+         id="rect188" />
+      <text
+         x="17.93"
+         y="903.5"
+         id="text188" />
+    </g>
+    <g
+       id="g189">
+      <title
+         id="title188">H5D__chunk_cache_evict.constprop.0 (101,689,644,457 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="253"
+         width="4.2"
+         height="15.0"
+         fill="rgb(216,55,13)"
+         rx="2"
+         ry="2"
+         id="rect189" />
+      <text
+         x="19.14"
+         y="263.5"
+         id="text189" />
+    </g>
+    <g
+       id="g190">
+      <title
+         id="title189">__Pyx_PyVectorcall_FastCallDict_kw (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="461"
+         width="4.2"
+         height="15.0"
+         fill="rgb(219,64,15)"
+         rx="2"
+         ry="2"
+         id="rect190" />
+      <text
+         x="19.14"
+         y="471.5"
+         id="text190" />
+    </g>
+    <g
+       id="g191">
+      <title
+         id="title190">__Pyx_CyFunction_CallAsMethod (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="589"
+         width="0.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect191" />
+      <text
+         x="17.96"
+         y="599.5"
+         id="text191" />
+    </g>
+    <g
+       id="g192">
+      <title
+         id="title191">__Pyx_CyFunction_Call (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="461"
+         width="1.5"
+         height="15.0"
+         fill="rgb(252,218,52)"
+         rx="2"
+         ry="2"
+         id="rect192" />
+      <text
+         x="23.31"
+         y="471.5"
+         id="text192" />
+    </g>
+    <g
+       id="g193">
+      <title
+         id="title192">PyObject_CallOneArg (2,714,075,912 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="509"
+         width="0.1"
+         height="15.0"
+         fill="rgb(232,124,29)"
+         rx="2"
+         ry="2"
+         id="rect193" />
+      <text
+         x="25.07"
+         y="519.5"
+         id="text193" />
+    </g>
+    <g
+       id="g194">
+      <title
+         id="title193">H5D__chunk_lock.isra.0 (5,187,235,737 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="77"
+         width="0.2"
+         height="15.0"
+         fill="rgb(222,81,19)"
+         rx="2"
+         ry="2"
+         id="rect194" />
+      <text
+         x="17.96"
+         y="87.5"
+         id="text194" />
+    </g>
+    <g
+       id="g195">
+      <title
+         id="title194">_PyEval_Vector (2,628,911,568 samples, 0.01%)</title>
+      <rect
+         x="22.1"
+         y="477"
+         width="0.1"
+         height="15.0"
+         fill="rgb(205,0,0)"
+         rx="2"
+         ry="2"
+         id="rect195" />
+      <text
+         x="25.07"
+         y="487.5"
+         id="text195" />
+    </g>
+    <g
+       id="g196">
+      <title
+         id="title195">PyVectorcall_Call (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="493"
+         width="0.2"
+         height="15.0"
+         fill="rgb(234,137,32)"
+         rx="2"
+         ry="2"
+         id="rect196" />
+      <text
+         x="17.96"
+         y="503.5"
+         id="text196" />
+    </g>
+    <g
+       id="g197">
+      <title
+         id="title196">pyrun_file (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="797"
+         width="0.3"
+         height="15.0"
+         fill="rgb(254,228,54)"
+         rx="2"
+         ry="2"
+         id="rect197" />
+      <text
+         x="17.93"
+         y="807.5"
+         id="text197" />
+    </g>
+    <g
+       id="g198">
+      <title
+         id="title197">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="733"
+         width="4.2"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect198" />
+      <text
+         x="19.14"
+         y="743.5"
+         id="text198" />
+    </g>
+    <g
+       id="g199">
+      <title
+         id="title198">pymain_main (28,560,049,056,057 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="845"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(205,2,0)"
+         rx="2"
+         ry="2"
+         id="rect199" />
+      <text
+         x="24.82"
+         y="855.5"
+         id="text199">pymain_main</text>
+    </g>
+    <g
+       id="g200">
+      <title
+         id="title199">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="349"
+         width="0.2"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect200" />
+      <text
+         x="17.96"
+         y="359.5"
+         id="text200" />
+    </g>
+    <g
+       id="g201">
+      <title
+         id="title200">__pyx_pf_4h5py_8_objects_9with_phil_wrapper (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="605"
+         width="1.5"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect201" />
+      <text
+         x="23.31"
+         y="615.5"
+         id="text201" />
+    </g>
+    <g
+       id="g202">
+      <title
+         id="title201">__Pyx_CyFunction_CallAsMethod (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="493"
+         width="4.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect202" />
+      <text
+         x="19.14"
+         y="503.5"
+         id="text202" />
+    </g>
+    <g
+       id="g203">
+      <title
+         id="title202">__memcpy_avx512_unaligned_erms (14,778,719,964 samples, 0.05%)</title>
+      <rect
+         x="1189.3"
+         y="541"
+         width="0.6"
+         height="15.0"
+         fill="rgb(214,43,10)"
+         rx="2"
+         ry="2"
+         id="rect203" />
+      <text
+         x="1192.26"
+         y="551.5"
+         id="text203" />
+    </g>
+    <g
+       id="g204">
+      <title
+         id="title203">H5D__compact_writevv (33,263,832,984 samples, 0.12%)</title>
+      <rect
+         x="20.4"
+         y="125"
+         width="1.4"
+         height="15.0"
+         fill="rgb(216,51,12)"
+         rx="2"
+         ry="2"
+         id="rect204" />
+      <text
+         x="23.41"
+         y="135.5"
+         id="text204" />
+    </g>
+    <g
+       id="g205">
+      <title
+         id="title204">_PyEval_EvalFrame (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="653"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(251,213,51)"
+         rx="2"
+         ry="2"
+         id="rect205" />
+      <text
+         x="24.82"
+         y="663.5"
+         id="text205">_PyEval_EvalFrame</text>
+    </g>
+    <g
+       id="g206">
+      <title
+         id="title205">all (28,850,178,938,056 samples, 100%)</title>
+      <rect
+         x="10.0"
+         y="925"
+         width="1180.0"
+         height="15.0"
+         fill="rgb(213,39,9)"
+         rx="2"
+         ry="2"
+         id="rect206" />
+      <text
+         x="13.00"
+         y="935.5"
+         id="text206" />
+    </g>
+    <g
+       id="g207">
+      <title
+         id="title206">__Pyx_CyFunction_Vectorcall_FASTCALL_KEYWORDS (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="253"
+         width="0.2"
+         height="15.0"
+         fill="rgb(249,206,49)"
+         rx="2"
+         ry="2"
+         id="rect207" />
+      <text
+         x="17.96"
+         y="263.5"
+         id="text207" />
+    </g>
+    <g
+       id="g208">
+      <title
+         id="title207">_PyRun_SimpleFileObject (28,559,997,518,087 samples, 98.99%)</title>
+      <rect
+         x="21.8"
+         y="749"
+         width="1168.1"
+         height="15.0"
+         fill="rgb(249,203,48)"
+         rx="2"
+         ry="2"
+         id="rect208" />
+      <text
+         x="24.82"
+         y="759.5"
+         id="text208">_PyRun_SimpleFileObject</text>
+    </g>
+    <g
+       id="g209">
+      <title
+         id="title208">__pyx_pf_4h5py_3h5d_9DatasetID_2write (35,724,291,762 samples, 0.12%)</title>
+      <rect
+         x="20.3"
+         y="301"
+         width="1.5"
+         height="15.0"
+         fill="rgb(236,143,34)"
+         rx="2"
+         ry="2"
+         id="rect209" />
+      <text
+         x="23.31"
+         y="311.5"
+         id="text209" />
+    </g>
+    <g
+       id="g210">
+      <title
+         id="title209">pymain_run_file (6,234,738,104 samples, 0.02%)</title>
+      <rect
+         x="14.9"
+         y="861"
+         width="0.3"
+         height="15.0"
+         fill="rgb(221,74,17)"
+         rx="2"
+         ry="2"
+         id="rect210" />
+      <text
+         x="17.93"
+         y="871.5"
+         id="text210" />
+    </g>
+    <g
+       id="g211">
+      <title
+         id="title210">_PyEval_EvalFrameDefault (3,936,701,302 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="477"
+         width="0.2"
+         height="15.0"
+         fill="rgb(221,75,17)"
+         rx="2"
+         ry="2"
+         id="rect211" />
+      <text
+         x="25.22"
+         y="487.5"
+         id="text211" />
+    </g>
+    <g
+       id="g212">
+      <title
+         id="title211">LZ4_wildCopy8 (6,713,659,762 samples, 0.02%)</title>
+      <rect
+         x="14.6"
+         y="829"
+         width="0.3"
+         height="15.0"
+         fill="rgb(234,134,32)"
+         rx="2"
+         ry="2"
+         id="rect212" />
+      <text
+         x="17.60"
+         y="839.5"
+         id="text212" />
+    </g>
+    <g
+       id="g213">
+      <title
+         id="title212">__pyx_f_4h5py_6_proxy_dset_rw (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="397"
+         width="4.2"
+         height="15.0"
+         fill="rgb(231,119,28)"
+         rx="2"
+         ry="2"
+         id="rect213" />
+      <text
+         x="19.14"
+         y="407.5"
+         id="text213" />
+    </g>
+    <g
+       id="g214">
+      <title
+         id="title213">PyObject_GetAttr (3,553,517,505 samples, 0.01%)</title>
+      <rect
+         x="22.2"
+         y="461"
+         width="0.2"
+         height="15.0"
+         fill="rgb(216,52,12)"
+         rx="2"
+         ry="2"
+         id="rect214" />
+      <text
+         x="25.23"
+         y="471.5"
+         id="text214" />
+    </g>
+    <g
+       id="g215">
+      <title
+         id="title214">__Pyx_CyFunction_CallAsMethod (101,738,289,535 samples, 0.35%)</title>
+      <rect
+         x="16.1"
+         y="589"
+         width="4.2"
+         height="15.0"
+         fill="rgb(205,3,0)"
+         rx="2"
+         ry="2"
+         id="rect215" />
+      <text
+         x="19.14"
+         y="599.5"
+         id="text215" />
+    </g>
+    <g
+       id="g216">
+      <title
+         id="title215">__pyx_pw_4h5py_8_objects_9with_phil_1wrapper (5,412,288,719 samples, 0.02%)</title>
+      <rect
+         x="15.0"
+         y="541"
+         width="0.2"
+         height="15.0"
+         fill="rgb(239,160,38)"
+         rx="2"
+         ry="2"
+         id="rect216" />
+      <text
+         x="17.96"
+         y="551.5"
+         id="text216" />
+    </g>
+  </g>
+  <text
+     xml:space="preserve"
+     style="writing-mode:lr-tb;direction:ltr;fill:#000000"
+     x="60.875"
+     y="464.17188"
+     id="text217"><tspan
+       sodipodi:role="line"
+       id="tspan216"></tspan></text>
+  <path
+     style="fill:#000000"
+     id="path218"
+     d="m 183.99663,464.4705 c 3.23332,2.05925 6.68392,3.85772 9.40775,6.61224 1.74156,1.76117 2.06233,2.47332 3.375,4.498 2.22675,3.89061 3.53243,8.21527 5.90227,12.02466 1.46662,2.53983 3.71909,4.34185 5.86409,6.26162 4.83606,3.83636 5.63,4.56322 15.08456,8.61069 0.69286,0.29661 1.41855,-0.52 2.0907,-0.86094 3.64421,-1.84847 7.11434,-4.17625 10.58803,-6.31671 4.37676,-2.51861 8.35093,-5.73932 12.87366,-8.00808 2.40943,-1.20866 2.99524,-1.30829 5.49903,-2.14434 2.79675,-1.20343 5.87597,-1.60087 8.67229,-2.79052 1.78084,-0.75762 1.89572,-0.96869 3.55867,-2.11403 3.7965,-2.79355 7.76021,-5.40202 12.01134,-7.45112 0,0 -12.27301,-8.06433 -12.27301,-8.06433 v 0 c -4.19712,2.23832 -8.16951,4.87883 -12.07518,7.58796 -0.59892,0.35745 -1.17948,0.74765 -1.79676,1.07235 -3.1786,1.67199 -6.85106,2.18629 -10.12233,3.63679 -2.58571,0.97811 -3.083,1.0706 -5.56555,2.41108 -4.42915,2.39157 -8.34104,5.62252 -12.66961,8.17979 -3.13595,1.86623 -7.28136,4.63203 -10.81048,5.64724 -0.53643,0.15432 -2.12923,-0.24353 -1.67275,0.0777 3.2808,2.30881 16.12762,9.67502 10.36104,6.12348 -0.31844,-0.27716 -0.63688,-0.55433 -0.95533,-0.83149 -0.28274,-0.27162 -0.55277,-0.55715 -0.84824,-0.81487 -1.54965,-1.35164 -3.29208,-2.4206 -4.30245,-4.30703 -2.6769,-3.67948 -4.05877,-8.02469 -6.11661,-12.05537 -1.24139,-2.11518 -1.63091,-3.00155 -3.28587,-4.88218 -2.47598,-2.81361 -5.69367,-4.75826 -8.90288,-6.61558 z" />
+  <path
+     style="fill:#000000"
+     id="path219"
+     d="m 227.96504,496.02424 c -1.10002,-3.3129 -1.94472,-6.82189 -1.83525,-10.33938 0.0276,-0.88526 0.17474,-1.76274 0.26211,-2.6441 0.43671,-4.98607 2.37062,-9.62211 4.62781,-14.03317 0.93518,-1.72846 1.30852,-3.70314 2.14024,-5.47159 0.80576,-1.71326 2.03899,-3.29543 3.13893,-4.82057 1.54194,-2.27545 3.6182,-4.05041 5.55905,-5.95588 2.41277,-2.36878 4.7957,-4.7257 7.28793,-7.01461 2.12946,-2.1211 4.21401,-4.30449 6.117,-6.63428 0.55822,-0.68343 1.04225,-1.42618 1.61349,-2.09876 1.23112,-1.44951 1.98954,-2.04314 3.40041,-3.30825 1.88405,-1.35345 3.97954,-2.35695 6.2143,-2.98077 0.73275,-0.20454 1.49433,-0.29303 2.22866,-0.49182 2.01994,-0.54679 2.41574,-0.79806 4.3262,-1.62211 1.50298,-0.64211 2.48031,-1.00735 3.90116,-1.82276 0.66755,-0.3831 1.28175,-0.85411 1.94659,-1.2419 4.8017,-2.80079 9.75321,-5.35831 14.68172,-7.92364 7.941,-3.92753 15.77722,-8.15857 24.03266,-11.4121 2.24971,-0.88664 5.3879,-1.90632 7.70571,-2.68234 4.57532,-1.75023 9.43961,-2.0666 14.2199,-2.79723 1.54369,-0.47685 0.84793,-0.1165 2.09898,-1.05814 0,0 -12.56444,-8.0507 -12.56444,-8.0507 v 0 c -0.94236,0.49922 -0.4022,0.27682 -1.64865,0.59422 -4.72656,0.77287 -9.4727,1.50349 -13.95459,3.29521 -3.10402,1.12135 -4.48972,1.56302 -7.56116,2.92491 -8.03763,3.5639 -15.62996,8.05824 -23.6016,11.7608 -5.22287,2.44621 -10.60228,4.71938 -15.71204,7.40503 -0.65098,0.34215 -1.25467,0.76905 -1.90225,1.11757 -1.32628,0.7138 -2.43797,1.15665 -3.82147,1.75296 -4.40581,1.74621 -9.26776,2.36825 -13.00902,5.54195 -1.62917,1.50476 -2.09782,1.83355 -3.50989,3.55508 -0.53971,0.65798 -0.99536,1.3816 -1.52821,2.04514 -1.84484,2.29733 -3.85156,4.48146 -5.95328,6.54361 -4.51519,4.23326 -9.18522,8.35711 -13.18584,13.08667 -1.21876,1.62826 -2.49928,3.2932 -3.37947,5.14183 -0.47935,1.00675 -0.89593,2.49833 -1.29686,3.54267 -0.23456,0.61098 -0.50608,1.20712 -0.75912,1.81068 -2.22423,4.61432 -4.15865,9.42427 -4.73661,14.55438 -0.11741,0.93448 -0.28866,1.86376 -0.35222,2.80344 -0.24201,3.57803 0.44796,7.13291 1.30695,10.58683 z" />
+  <text
+     xml:space="preserve"
+     style="font-size:21.3333px;writing-mode:lr-tb;direction:ltr;fill:#000000"
+     x="356.37241"
+     y="400.33768"
+     id="text219"><tspan
+       sodipodi:role="line"
+       id="tspan219"
+       x="356.37241"
+       y="400.33768" /></text>
+  <text
+     xml:space="preserve"
+     style="font-size:21.3333px;writing-mode:lr-tb;direction:ltr;fill:#000000"
+     x="346.64932"
+     y="401.6059"
+     id="text220"><tspan
+       sodipodi:role="line"
+       id="tspan220"></tspan></text>
+  <text
+     xml:space="preserve"
+     style="font-size:32px;writing-mode:lr-tb;direction:ltr;fill:#000000"
+     x="349.1438"
+     y="404.1459"
+     id="text221"><tspan
+       sodipodi:role="line"
+       id="tspan221"
+       x="349.1438"
+       y="404.1459"
+       style="font-size:32px">update_stress_velocity_seq_tiled</tspan></text>
+</svg>
