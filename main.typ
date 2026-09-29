@@ -26,7 +26,9 @@
     style: "ieee",
     title: "Bibliography",
   ),
-  // appendix: include "content/appendix.typ",
+  appendix: (
+    include "content/appendix.typ",
+  ),
   acknowledgements: include "content/acknowledgements.typ",
   ai_usage: ai_usage_list,
 )
