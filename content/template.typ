@@ -600,7 +600,7 @@ Temporal Staggering is achieved by first updating stress and then velocity inste
 
 - *Domain decomposition.* The global grid is split across MPI#cite(<Forum1994MPIAM>) ranks using a 2D Cartesian topology built with Compute_dims and Create_cart. Each rank owns a rectangular subdomain plus a one cell halo. Neighboring ranks exchange halo values for the stress and velocity fields every timestep using Sendrecv calls.
 
-- *Stress and velocity updates.* Inside each rank's subdomain, the update kernels update_stress and update_velocity are written in C and parallelized with OpenMP#cite(<dagum1998>). Combined with the MPI domain decomposition, this hybrid MPI and OpenMP scheme forms the main strategy of our parallelization.
+- *Stress and velocity updates.* Inside each rank's subdomain, stress and velocity are updated using a fused, tiled kernel written in C and parallelized with OpenMP#cite(<dagum1998>). Combined with the MPI domain decomposition, this hybrid MPI and OpenMP scheme forms the main strategy of our parallelization.
 
 - *HDF5 output.* Each rank writes its own wavefield snapshots to an independent file. This avoids the bottleneck that would occur if every rank had to send its data through rank 0 for writing.
 
@@ -1661,19 +1661,19 @@ Each rank clearly operates on its own independent rhythm of long and short compu
 
 === Gzip, LZ4 Comparison
 
-@fig-vampir-output compares a window of about 1.02 seconds from each trace at the same zoom level. Each window contains exactly one output step. In the timeline, this step appears as a vertical band in which the stencil kernels stop on every thread of every rank.
+@fig-vampir-output compares traces of gzip and LZ4 (via Blosc). This was done on an older version of the code, since tiling could not be visualized without heavy downsampling as more Score-P data is produced by it, which would have reduced the amount of data being compressed and therefore would not have represented compression performance accurately. An older version was used instead, and since the amount of data saved per frame is the same, the results should be identical in the most recent version using tiling.
 
 #figure(
   grid(
     columns: 1,
     row-gutter: 10pt,
-    [#image("assets/vampir_lz4_output.png", width: 100%) (a) Blosc LZ4, 6.95 s to 7.97 s],
-    [#image("assets/vampir_gzip_output.png", width: 100%) (b) gzip, 15.40 s to 16.42 s],
+    [#image("assets/blosc_scale_2.png", width: 100%) (a) Blosc LZ4],
+    [#image("assets/gzip_scale_3.png", width: 100%) (b) gzip],
   ),
-  caption: [One output step in each trace, shown at the same zoom level of about 1.02 seconds.],
+    caption: [Vampir visualization of blosc LZ4 vs gzip.],
 ) <fig-vampir-output>
 
-With Gzip compression, kernel execution pauses for approximately 70 ms, whereas with LZ4 the pause is shorter, at approximately 20 ms. The Score-P trace did not capture the Blosc compression routines themselves, so their parallel execution could not be visualized. Furthermore, a Score-P trace of the full run occupied 142GB and could not be loaded for analysis. Substantial downsampling was therefore required, which also reduced the amount of data to be compressed. The visible gap is expected to be considerably larger in full-scale runs, as the benchmarks show that the Blosc configuration using parallelized LZ4 is approximately twice as fast as the Gzip configuration. Nevertheless, the difference remains visible even in this heavily downsampled run.
+With Gzip compression, kernel execution pauses for approximately 2.75s, whereas with LZ4 using Blosc the pause is shorter, at approximately 0.22s. The Score-P trace did not capture the Blosc compression routines themselves, so their parallel execution could not be visualized.
 
 = Discussion
 == Analysis and Bottleneck
@@ -1690,10 +1690,12 @@ While the parallelization strategy presented in this work achieves substantial s
 
 Additionally, the memory bandwidth restriction remains unproven. LIKWID #cite(<treibig2010>) was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction. To demonstrate the memory bandwidth bottleneck of earlier versions and how well tiling solved it, this measurement would be highly informative.
 
+And finally, the amount of work allocated per thread within a tile is fixed at 4 rows. This value has simply been hardcoded. The idea was to make the per-thread workload as large as possible to reduce the number of round trips to memory, while still keeping it small enough for all the stress values to fit into the cache and minimize memory access overhead. However, as the subdomain size shrinks with an increasing number of ranks, the effective cost and benefit of using exactly 4 rows changes as well as the rows shorten. An algorithm could be designed to adjust the row count dynamically based on cache size and rank count in order to minimize the number of memory accesses. This is likely the most impactful improvement that could be explored in future work. Varying the row count per thread has not yet been benchmarked.
+
 = Conclusion
 
 This work presented a hybrid MPI and OpenMP implementation of elastic seismic wave forward modeling on the Marmousi2 subsurface model at full resolution. The sequential solver was extended with a domain decomposition across MPI ranks, where the global grid was split into rectangular subdomains chosen to balance their shape and reduce the relative cost of halo exchange, with each rank exchanging halo values with its neighbors every timestep. OpenMP was used to split the work within each rank across threads and vectorize it with SIMD. Tiling, introduced as a cache optimization for the parallel implementation specifically, kept the stress and velocity updates operating on data that remained resident in cache within each rank, which likely improved performance by noticeably reducing, though not eliminating, the impact of memory bottlenecks. Output writing was similarly parallelized, with each rank writing its own compressed file using LZ4 rather than funneling data through a single rank, removing a serial bottleneck that had previously left most ranks waiting on compression performed by only one of them.
 
 Using this approach, the runtime was reduced from 12374 seconds sequentially to 203 seconds using 960 cores across ten nodes, a speedup of 61 times. Compared to the diminishing returns visible already at smaller core counts, where 16 cores gave a speedup of 6.3 times, this result is reasonable given the combined overhead of OpenMP synchronization and MPI halo exchange at larger scale.
 
-LIKWID was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially.
+LIKWID was used in an attempt to directly measure memory bandwidth utilization, though the relevant counters could not be read due to what appears to be a permissions restriction, and this measurement could be attempted again in future work. Given the nature of the workload, with simple, uniform computation performed independently at every grid point, GPU acceleration is another natural direction for future work which could improve performance substantially. And the performance of the current solver could still be improved by adjusting the row count allocated per thread in the tiling algorithm to the rank count.
