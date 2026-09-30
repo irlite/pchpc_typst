@@ -21,31 +21,43 @@
   // #set text(font: "Liberation Serif")
   // #set text(font: "Libertinus Serif")
   // #set text(font: "New Computer Modern")
-
-  #let check_point(content, checked) = [
-    #let symbol = if checked { sym.ballot.cross } else { sym.ballot }
-    // #let symbol = if checked { sym.crossmark } else { sym.ballot }
-    // #let symbol = if checked { sym.ballot.check.heavy } else { sym.ballot }
-
-    #grid(
-      columns: 2,
-      inset: (x: 1em, y: 0em),
-      symbol, content,
-    )
+#let checkbox(checked) = box(
+  width: 0.9em,
+  height: 0.9em,
+  inset: 0pt,
+  stroke: 0.7pt + black,
+)[
+  #align(center + horizon)[
+    #if checked {
+      text(size: 7pt, weight: "bold")[×]
+    }
   ]
+]
+#let check_point(content, checked) = block(
+    above: 1.2em,
+  below: 0.35em,
+)[
+  #grid(
+    columns: (1.4em, 1fr),
+    column-gutter: 0.7em,
+    align: (center, left),
+    checkbox(checked),
+    content,
+  )
+]
 
   #text(size: 14pt, weight: "bold")[
     Declaration on the use of AI tools in the context of examinations
   ]
 
-  In this work I have used AI tools as follows:
+  In this work we have used AI tools as follows:
 
   #for (body, checked) in ai_usage {
     check_point(body, checked)
   }
 
   #v(2em)
-  I hereby declare that I have stated all uses completely and truthfully.
+  We hereby declare that we have stated all uses completely and truthfully.
 
   Missing or incorrect information will be considered as an attempt to cheat.
 ]

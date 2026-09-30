@@ -13,9 +13,9 @@ updates, and parallelized, compressed output writing to avoid serializing
 I/O through a single process. Compared to a sequential baseline runtime of
 12374 seconds, the parallel implementation achieves a runtime of 203 seconds
 using 960 CPU cores across ten nodes, corresponding to a speedup of 61 times
-and a parallel efficiency of 8.8 percent. The results show that most of the
+and a parallel efficiency of 6.4%. The results show that most of the
 achievable gains are captured at moderate core counts, with just 16 cores
 already achieving a speedup of 6.3 times, while OpenMP synchronization
-overhead and uncovered MPI communication limit further scaling at larger
+overhead, MPI communication and memory bottlenecks reduce scaling at larger
 core counts, motivating GPU acceleration as a promising direction for
 future work.

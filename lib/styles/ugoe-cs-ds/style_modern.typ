@@ -142,6 +142,7 @@
   chapters,
   abstract: none,
   declaration: none,
+  ai_usage: none,
   bib: none,
   appendix: none,
   ..other_args,
@@ -155,7 +156,7 @@
 
     // import the first few pages (title page, contact info, declaration, abstract, outline)
     import "./prelude.typ": prelude
-    prelude(config: config, abstract: abstract, declaration: declaration)
+    prelude(config: config, abstract: abstract, declaration: declaration, ai_usage: ai_usage)
   }
 
   // 2. Main content

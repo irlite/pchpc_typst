@@ -506,9 +506,11 @@ In addition to being staggered in space, the scheme is also staggered in time. S
 
 == Tiling
 
-As a consequence of the temporal staggering described above, every timestep first advances the velocity fields by half a timestep using the stress values just computed, then advances the stress fields by the next half timestep, using the velocity values just computed. Implemented naively, this ordering can hurt performance. Since the entire velocity field is computed first, sweeping across the full grid, by the time this pass finishes, the values computed early in the sweep have long since been pushed out of the cache to make room for those computed later, as the cache cannot hold the full grid at once. When the stress update immediately afterward needs those same velocity values, most of them are no longer available nearby and must instead be streamed back in from main memory. The resulting cost is especially significant relative to how cheap the underlying arithmetic is.
+As a consequence of the temporal staggering described above, every timestep first advances the velocity fields by half a timestep using the stress values just computed, then advances the stress fields by the next half timestep, using the velocity values just computed. Implemented naively, this ordering can hurt performance. Since the entire velocity field is computed first, sweeping across the full grid, by the time this pass finishes, the values computed early in the sweep have long since been pushed out of the cache to make room for those computed later, as the cache cannot hold the full grid at once. When the stress update immediately afterward needs those same velocity values, most of them are no longer available nearby and must instead be streamed back in from main memory, a far slower operation than reading from cache, regardless of how many other cores happen to be active at the time. The resulting cost is especially significant relative to how cheap the underlying arithmetic is.
 
-To remove this bottleneck, this work applies tiling. When using tiling, the grid is divided into many small tiles instead of computing the entire field. For each tile, velocity is computed first, and immediately afterward, while those values are still resident in the cache, the corresponding stress values are computed using them, before the next tile is processed. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back, is reduced to a single round trip, since each value is consumed again while still cheap to access.
+A second, separate effect appears once many cores are active simultaneously. Unlike the latency of a single memory access, which is a fixed cost paid independently by each core, the total bandwidth of the memory system is a shared resource. Every core on a socket draws from the same limited pool of throughput to main memory. As more threads are added, compute capacity grows with each additional core, but the bandwidth available to feed them does not, so cores increasingly compete for access to the same memory system. A computation whose performance is limited by either of these effects, the latency of individual accesses or the available shared bandwidth, rather than by how much arithmetic the processor can perform, is described as being memory bound.
+
+This work applies tiling in an attempt to reduce both of these two effects. The grid is divided into many small tiles instead of computing the entire field in one pass. For each tile, stress is computed first, and immediately afterward, before moving on to another tile whose values would push these ones out of the cache, the corresponding velocity values are computed for that same tile while its stress values are still resident. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back after it has been evicted, is reduced to a single round trip, since each value is consumed again while still cheap to access.
 
 = Methodology
 == Output
@@ -567,7 +569,6 @@ function update_stress_velocity(vx, vz, sxx, szz, sxz, lam, lam2mu, mu, inv_rho,
 The four derived arrays, $mu$, $lambda$, $lambda + 2 mu$ and $1 slash rho$, are
 computed once during setup. The kernels read
 exactly these quantities, so no material property is ever recomputed.
-over the grid.
 
 === The Division Between Python and C
 
@@ -701,7 +702,7 @@ Once the Cartesian communicator is created, each rank locates its four neighbors
 
 *Halo Exchange*
 
-As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. As was briefly mentioned in x and will be shown in more detail in y, computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field instead of both sides. This cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five.
+As detailed earlier, the grid is staggered spatially, meaning that the velocity and stress components are not stored at the same physical location but are offset from one another by half a grid spacing. Physically, this means that a velocity value is treated as living midway between two neighboring stress points, rather than coinciding with them. Computing the spatial derivative needed to update it only requires the single stress value immediately behind it, not the values on both the left and the right. The same holds in reverse for updating stress from velocity. As a result, each rank only ever needs a neighboring value from one direction per axis instead of two, so only one side needs to be communicated for a given field instead of both sides. This cuts the data that has to be exchanged via MPI#cite(<Forum1994MPIAM>) in half. Without staggering all five fields would require neighbor values from both directions along each axis, giving ten directional transfers per axis, whereas with staggering the two velocity fields only require one direction and the three stress fields only require the other, giving five.
 
 #figure(
   box(width: 12cm, height: 5.8cm)[
@@ -1139,7 +1140,7 @@ As was outlined in the MPI section, the stress values of the rightmost column an
 
 = Implementation
 
-
+== Setup
 *Hardware.* All experiments were run on nodes equipped with Intel Xeon Platinum 8468 ("Sapphire Rapids") processors, with 48 cores per socket and two sockets per node, giving 96 cores per node in total.
 
 *Grid and Model.* Unless stated otherwise, results use the full resolution Marmousi2 grid of $2801 times 13601$ points (@tab-model), padded by 240 cells on each side for the absorbing boundary.
@@ -1240,7 +1241,7 @@ for (int ib = iz0; ib < iz1; ib += tile_z) {
 }
 ```
 
-To make comparisons fair, the tiling is applied here too, although it was meant as a optimization strategy for parallelization. It still provides cache optimization improvements..  `tile_z` and `tile_x` are chosen so that the working set of the ten arrays involved, five fields and five material properties, for one tile remains small enough to stay resident in the core's own cache while both the stress and velocity update for that tile are computed This is the same tiling technique used in the parallel implementation, applied here without any OpenMP directives, since a single core has no work to divide among threads.
+To make comparisons fair, the tiling is applied here too, although it was meant as an optimization strategy for parallelization. It still provides cache optimization improvements.  `tile_z` and `tile_x` are chosen so that the working set of the ten arrays involved, five fields and five material properties, for one tile remains small enough to stay resident in the core's own cache while both the stress and velocity update for that tile are computed This is the same tiling technique used in the parallel implementation, applied here without any OpenMP directives, since a single core has no work to divide among threads.
 
 == Parallel
 
@@ -1383,11 +1384,38 @@ for (int i = iz0; i < last_i; ++i) {
 ```
 
 = Results
-In the following section, the benchmarking results will be shown. Every time measurements has been taken as the average of at least 4 runs since some variation always occurs.
+== Wave Propagation Data
+The program successfully produced the data required to animate the seismic wave forward modeling. Figures @swfm-1, @swfm-2 and @swfm-3 display three select frames taken from the final animation.
+
+#figure(
+  grid(
+    columns: 1,
+    row-gutter: 10pt,
+    [#image("assets/63.png", width: 90%)],
+  ),
+  caption: [Output Frame 63],
+) <swfm-1>
+#figure(
+  grid(
+    columns: 1,
+    row-gutter: 10pt,
+    [#image("assets/140.png", width: 90%)],
+  ),
+  caption: [Output Frame 140],
+) <swfm-2>
+#figure(
+  grid(
+    columns: 1,
+    row-gutter: 10pt,
+    [#image("assets/244.png", width: 90%)],
+  ),
+  caption: [Output Frame 244],
+) <swfm-3>
+
 == Sequential Performance
 === Overall Runtime
 
-The overall runtime was 12374 seconds, or 3h 26m 14s. This reflects 50000 iterations over the padded compute grid of 3281 x 14081 points, roughly 46.2 million points per iteration once the 240 cell absorbing boundary on each side is included. This total includes setup, the full time loop, and output writing, and is broken down further in the next section. This value also serves as the baseline runtime used for all speedup and efficiency calculations in the Parallel Performance section below.
+The average of the overall runtime of four computations was 12374 seconds, or 3h 26m 14s. This reflects 50000 iterations over the padded compute grid of 3281 x 14081 points, roughly 46.2 million points per iteration once the 240 cell absorbing boundary on each side is included. This total includes setup, the full time loop, and output writing, and is broken down further in the next section. This value also serves as the baseline runtime used for all speedup and efficiency calculations in the Parallel Performance section below.
 === Runtime Breakdown by Program Phase
 To analyze how execution time is distributed across the program, `perf`#cite(<linux_perf>) was used to generate a flame graph, shown in @fig:flamegraph.
 
@@ -1407,7 +1435,7 @@ The parallel performance of the implementation was evaluated using strong- and
 weak-scaling experiments. Strong scaling measures how effectively additional
 compute resources reduce the runtime of a fixed problem. Weak scaling instead
 measures how well the runtime is maintained when the problem size and the
-available resources are increased together.
+available resources are increased together. Each result is the average of at least four computations.
 
 Each configuration is written as $n times m times s$, where $n$ is the number
 of nodes, $m$ is the number of MPI ranks per node, and $s$ is the number of
@@ -1481,7 +1509,7 @@ an increasing number of OpenMP threads.
   ],
 ) <fig:strong_sn>
 
-The biggest efficiency drop occurs when comparing the sequential solver to the 1x1x16 run. This makes sense since OpenMP introduces barriers and general overhead. In the subsequent runs, the efficiency relative to its left neighbor stays at around 85% which is reasonable. So while the efficiency at 96 cores was only 21%, it is only 50% diminished from the 39% efficiency of the 16 core run.
+The biggest efficiency drop occurs between the sequential solver and the 1x1x16 run, where efficiency falls to just 39%. Some of this can be explained by the overhead introduced by OpenMP itself, including thread synchronization barriers and general parallelization overhead that a sequential run does not incur. However, we suspect that memory latency and bandwidth already play a major role even at this core count. This is further supported by the Vampir @vampir trace analysis below, which suggests that a large fraction of the computation is still spent waiting for data to arrive from memory rather than computing. In the subsequent runs, efficiency relative to the previous core count consistently stays around 85%, a reasonable rate of diminishing returns. So while efficiency at 96 cores drops to only 22%, this is only about half of the 39% efficiency already lost at 16 cores, rather than a further collapse of similar size. Ultimately, parallelizing this computation on a single CPU using 96 cores brought the runtime down from 12374 seconds to just 587 seconds.
 
 *Strong Scaling Across Multiple Nodes*
 
@@ -1497,7 +1525,7 @@ per node.
   ],
 ) <fig:strong_mn>
 
-What stands out is that while the incremental efficiency drops for the 2 and 4 node runs, it rises strongly for 8 and 10 node runs. It is unclear why that is. It can, however, not be attributed to noise as this pattern is repeated in weak scaling results. Given that there are 2 halo exchanges per iteration, 30% efficiency is likely to be expected for the 10 node run.
+Using multiple nodes, the computation could be sped up further, from 587 to 203 seconds, corresponding to an efficiency of 29%. What stands out is that while incremental efficiency drops for the two and four node runs, it rises again strongly for the 8 and 10 node runs. It is unclear why this is the case. It cannot, however, be attributed to noise, since the same pattern also appears in the weak scaling results.
 
 === Weak Scaling
 
@@ -1541,7 +1569,7 @@ single MPI rank with an increasing number of OpenMP threads.
   ],
 ) <fig:weak_sn>
 
-The weak-scaling result is broadly consistent with its strong-scaling counterpart. A relative runtime of $6.13 times$ corresponds to a weak-scaling efficiency of $1 / 6.13 approx 16.31%$, which is lower than the approximately $22%$ efficiency observed in the strong-scaling experiment. The cause of this difference is unclear.
+The weak-scaling result is broadly consistent with its strong-scaling counterpart. A relative runtime of $6.13 times$ corresponds to a weak-scaling efficiency of $1 / 6.13 approx 16.31%$, which is lower than the approximately $22%$ efficiency observed in the strong-scaling experiment. The cause of this difference is unclear. The fact that the runtime stays consistent towards higher core counts confirms the high incremental efficiency observed in the strong scaling results.
 
 *Weak Scaling Across Multiple Nodes*
 
@@ -1556,7 +1584,7 @@ nodes, using six MPI ranks per node and 16 threads per rank.
   ],
 ) <fig:weak_mn>
 
-The multi-node weak-scaling result is broadly comparable to its strong-scaling counterpart. A relative runtime of $2.27 times$ corresponds to a weak-scaling efficiency of $1 / 2.27 approx 44.05%$, which is higher than the approximately $29%$ efficiency observed in the strong-scaling experiment. Importantly, the relative-runtime ratio decreases again for the two configurations after `4x6x16`. This trend is consistent with the increase in incremental efficiency observed for these same configurations relative to the preceding, lower-node-count configurations in the strong-scaling benchmark. Both benchmarks therefore indicate that scaling improves again at the higher node counts. We are not sure why the scaling is so much better in weak scaling either.
+The multi-node weak-scaling result is broadly comparable to its strong-scaling counterpart. A relative runtime of $2.27 times$ corresponds to a weak-scaling efficiency of $1 / 2.27 approx 44.05%$, which is higher than the approximately $29%$ efficiency observed in the strong-scaling experiment. Importantly, the relative-runtime ratio decreases again for the two configurations after 4x6x16. This trend is consistent with the increase in incremental efficiency observed for these same configurations relative to the preceding, lower-node-count configurations in the strong-scaling benchmark. Both benchmarks therefore indicate that scaling improves again at the higher node counts. It is unclear to us why the weak scaling is performing significantly better.
 
 === MPI Ranks and Threads per Rank
 
@@ -1574,7 +1602,7 @@ distributed differently between MPI ranks and OpenMP threads per rank.
 The configuration used in the benchmarks was informed by this experiment, which shows that 16 OpenMP threads per MPI rank is the most efficient choice for most runs. This reflects a tradeoff between the two decomposition strategies. Increasing the number of OpenMP threads per MPI rank increases the latency introduced by thread synchronization barriers, since each barrier must wait for the slowest of the participating threads. Conversely, increasing the number of MPI ranks relative to the number of OpenMP threads increases the number of subdomains and therefore the amount of MPI halo exchange, which increases communication latency.
 
 === Non-Tiling Version
-Tiling was used to improve performance specifically in higher core count per CPU runs. To demonstrate that impact, @fig:tiling compares the final version of the solver to a earlier iteration which did not use tiling.
+Tiling was used to improve performance specifically in higher core count per CPU runs. To demonstrate that impact, @fig:tiling compares the final version of the solver to an earlier iteration which did not use tiling.
 
 #figure(
   image("assets/old_o.png", width: 100%),
@@ -1583,7 +1611,9 @@ Tiling was used to improve performance specifically in higher core count per CPU
   ],
 ) <fig:tiling>
 
-Tiling generally improved performance by making better use of the cache. Even the sequential solver benefited slightly, with runtime decreasing from 12,835 to 12,374 seconds, a 3.6% improvement. The effect was considerably larger for the 96-core runs, where runtime dropped from 730 to 587 seconds, corresponding to a 19.6% improvement. This also raised the parallel efficiency relative to the sequential version from 18% to 22%, a relative improvement of 22.2%.
+Tiling generally improved performance by making better use of the cache. Even the sequential solver benefited slightly, with runtime decreasing from 12835 to 12374 seconds, a 3.6% improvement. The effect was considerably larger for the 96 core runs, where runtime dropped from 730 to 587 seconds, a 19.6% improvement. This also raised parallel efficiency relative to the sequential version from 18% to 22%, a relative improvement of 22.2%.
+
+There are two likely reasons the improvement was not larger. First, the original, untiled version already used fewer barriers, so tiling's added synchronization overhead partially offsets its benefit. Second, memory latency, and possibly bandwidth, likely still persist as limiting factors, merely reduced rather than eliminated by tiling. That the improvement is more pronounced at higher core counts, however, suggests that tiling is indeed working as intended, since this is exactly where memory related bottlenecks would be expected to matter most.
 
 === Kernel Comparison
 
@@ -1592,7 +1622,7 @@ Multiple OpenMP kernels were evaluated to identify the best-performing implement
 #figure(
   image("assets/kernels_a.png", width: 90%),
   caption: [
-      Performance of tiling vs no-tiling version. Only core counts are provided since the old version preferred a 32 core per rank configuration.
+      Performance relative to various OpenMP kernels.
   ],
 ) <fig:kernels>
 
@@ -1627,7 +1657,7 @@ To examine where time is spent at the level of individual functions and threads,
   caption: [Tiling Kernel Visualization Using Vampir],
 ) <fig:vampir2>
 
-Each rank clearly operates on its own independent rhythm of long and short computation phases, separated by short cyan barrier segments. Within each rank, the long phase corresponds to the stress computation and the short phase to the velocity computation, matching the two separate `#pragma omp for` loops executed per tile. The most striking feature is just how large this difference is. The stress update does involve somewhat more arithmetic than the velocity update, but that alone comes nowhere close to explaining a gap of this size. The far more plausible explanation is the effect tiling was specifically designed to produce. Computing stress requires reading velocity values that were last written a full timestep, and many other tiles, ago, and are therefore long gone from cache, whereas computing velocity immediately afterward reads the stress values just written by the previous phase for the same tile, still sitting hot in cache and accessible with far less latency. This visualization confirms oun memory bandwidth theory.
+Each rank clearly operates on its own independent rhythm of long and short computation phases, separated by short cyan barrier segments. Within each rank, the long phase corresponds to the stress computation and the short phase to the velocity computation, matching the two separate `#pragma omp for` loops executed per tile. The most striking feature is just how large this difference is. The stress update does involve somewhat more arithmetic than the velocity update, but that alone comes nowhere close to explaining a gap of this size. The far more plausible explanation is the effect tiling was specifically designed to produce. Computing stress requires reading velocity values that were last written a full timestep, and many other tiles, ago, and are therefore long gone from cache, whereas computing velocity immediately afterward reads the stress values just written by the previous phase for the same tile, still sitting hot in cache and accessible with far less latency. This visualization confirms our memory bottleneck theory.
 
 === Gzip, LZ4 Comparison
 
@@ -1643,26 +1673,26 @@ Each rank clearly operates on its own independent rhythm of long and short compu
   caption: [One output step in each trace, shown at the same zoom level of about 1.02 seconds.],
 ) <fig-vampir-output>
 
-With Gzip compression, kernel execution pauses for approximately 70 ms, whereas with LZ4 the pause is shorter, at approximately 20 ms. The Score-P trace did not capture the Blosc compression routines themselves, so their parallel execution could not be visualized. Furthermore, a Score-P trace of the full run occupied 142 GB and could not be loaded for analysis. Substantial downsampling was therefore required, which also reduced the amount of data to be compressed. The visible gap is expected to be considerably larger in full-scale runs, as the benchmarks show that the Blosc configuration using parallelized LZ4 is approximately twice as fast as the Gzip configuration. Nevertheless, the difference remains visible even in this heavily downsampled run.
+With Gzip compression, kernel execution pauses for approximately 70 ms, whereas with LZ4 the pause is shorter, at approximately 20 ms. The Score-P trace did not capture the Blosc compression routines themselves, so their parallel execution could not be visualized. Furthermore, a Score-P trace of the full run occupied 142GB and could not be loaded for analysis. Substantial downsampling was therefore required, which also reduced the amount of data to be compressed. The visible gap is expected to be considerably larger in full-scale runs, as the benchmarks show that the Blosc configuration using parallelized LZ4 is approximately twice as fast as the Gzip configuration. Nevertheless, the difference remains visible even in this heavily downsampled run.
 
 = Discussion
 == Analysis and Bottleneck
 
-The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each (a 960 fold increase in compute resources), took 203 seconds. This corresponds to a speedup of 61 times, a significant improvement, but only a fraction of the 960 fold increase in resources, yielding a parallel efficiency of 8.8%.
+The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each (a 960 fold increase in compute resources), took 203 seconds. This corresponds to a speedup of 61 times, a significant improvement, but only a fraction of the 960 fold increase in resources, yielding a parallel efficiency of 6.4%.
 
 It is clear that at this scale we are deep into diminishing returns. Using only 16 cores on a single node already reduced the runtime to 1960 seconds, a speedup of 6.3 times relative to the sequential run. This suggests that most of the achievable efficiency is captured early, while scaling to hundreds of cores yields comparatively small additional gains.
 
-This scaling behavior reflects two main limiting factors, the OpenMP barriers introduced by tiling and one of the two MPI halo exchanges (the forward halo exchange), which could not be hidden behind the interior computation. Nevertheless, earlier bottlenecks related to compression and, in particular, memory bandwidth were successfully addressed. In this light, the result is satisfactory overall, and the tiling mechanism demonstrates its effectiveness when dealing with the memory bandwidth limitations.
+This scaling behavior reflects three main limiting factors, the OpenMP barriers introduced by tiling, the forward MPI halo exchange, which, unlike the backward exchange, could not be hidden behind interior computation, and memory latency, and possibly bandwidth, which tiling was able to reduce but not eliminate. Nevertheless, the earlier bottleneck related to compression was successfully addressed and the tiling did improve the memory issues somewhat although not as much as was hoped. However, overall the result is satisfactory, and the tiling mechanism demonstrates effectiveness in mitigating the memory bandwidth limitations, even if it could not remove them entirely.
 
 == Improvements
 
-While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, in real world production use, seismic forward modeling are accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to it. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps well onto the thousands of lightweight threads a GPU provides.
+While the parallelization strategy presented in this work achieves substantial speedups over the sequential baseline, real world production use of seismic forward modeling is typically accelerated using GPUs rather than, or in addition to, multi core CPUs. The update kernels used here are a good example of a workload well suited to this. The computation performed at each grid point is simple and identical across the entire grid, with no data dependent branching, which maps well onto the thousands of lightweight threads a GPU provides. This could make it possible to extend this computation to 3D data as well, something that remains largely impractical with the current version.
 
 Additionally, the memory bandwidth restriction remains unproven. LIKWID #cite(<treibig2010>) was used to attempt to measure memory bandwidth usage, we used `likwid-perfctr` with the `MEM` performance group on the kernel. While core-level counters (instruction and cycle counts) were read correctly, the memory-controller counters required for bandwidth computation consistently returned zero. Verbose diagnostic output revealed that these counters were never actually queried by LIKWID, suggesting a permissions restriction. To demonstrate the memory bandwidth bottleneck of earlier versions and how well tiling solved it, this measurement would be highly informative.
 
 = Conclusion
 
-This work presented a hybrid MPI and OpenMP implementation of elastic seismic wave forward modeling on the Marmousi2 subsurface model at full resolution. The sequential solver was extended with a domain decomposition across MPI ranks, where the global grid was split into rectangular subdomains chosen to balance their shape and reduce the relative cost of halo exchange, with each rank exchanging halo values with its neighbors every timestep. OpenMP was used to split the work within each rank across threads and vectorize it with SIMD. Tiling, motivated as a cache optimization for the parallel implementation specifically, was used to keep the stress and velocity updates working on data that remains resident in cache within each rank, which was shown to improve problems related to memory bandwidth. Output writing was similarly parallelized, with each rank writing its own compressed file using LZ4 rather than funneling data through a single rank, removing a serial bottleneck that previously left most ranks waiting on compression performed by only one of them.
+This work presented a hybrid MPI and OpenMP implementation of elastic seismic wave forward modeling on the Marmousi2 subsurface model at full resolution. The sequential solver was extended with a domain decomposition across MPI ranks, where the global grid was split into rectangular subdomains chosen to balance their shape and reduce the relative cost of halo exchange, with each rank exchanging halo values with its neighbors every timestep. OpenMP was used to split the work within each rank across threads and vectorize it with SIMD. Tiling, introduced as a cache optimization for the parallel implementation specifically, kept the stress and velocity updates operating on data that remained resident in cache within each rank, which likely improved performance by noticeably reducing, though not eliminating, the impact of memory bottlenecks. Output writing was similarly parallelized, with each rank writing its own compressed file using LZ4 rather than funneling data through a single rank, removing a serial bottleneck that had previously left most ranks waiting on compression performed by only one of them.
 
 Using this approach, the runtime was reduced from 12374 seconds sequentially to 203 seconds using 960 cores across ten nodes, a speedup of 61 times. Compared to the diminishing returns visible already at smaller core counts, where 16 cores gave a speedup of 6.3 times, this result is reasonable given the combined overhead of OpenMP synchronization and MPI halo exchange at larger scale.
 

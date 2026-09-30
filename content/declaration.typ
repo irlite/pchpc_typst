@@ -1,4 +1,4 @@
-I hereby declare that I have written this thesis independently without any help from others and without the use of documents or aids other than those stated. I have mentioned all used sources and cited them correctly according to established academic citation rules.
+We hereby declare that we have written this thesis independently without any help from others and without the use of documents or aids other than those stated. We have mentioned all used sources and cited them correctly according to established academic citation rules.
 
 // In legacy style there is a date here for signing but since we don't print theses any more, we don't need that in modern style.
 
