@@ -1,5 +1,6 @@
 = Introduction
-Seismic wave forward modeling is the numerical simulation of how seismic waves propagate through a given earth model. It is used in applications ranging from earthquake hazard assessment and ground motion prediction to subsurface imaging in exploration geophysics. It is also a core building block of inverse problems such as full waveform inversion and seismic tomography, where synthetic waveforms produced by forward modeling are compared against observed data to iteratively refine an estimate of the subsurface.
+Seismic wave forward mod
+eling is the numerical simulation of how seismic waves propagate through a given earth model. It is used in applications ranging from earthquake hazard assessment and ground motion prediction to subsurface imaging in exploration geophysics. It is also a core building block of inverse problems such as full waveform inversion and seismic tomography, where synthetic waveforms produced by forward modeling are compared against observed data to iteratively refine an estimate of the subsurface.
 
 Solving the elastodynamic wave equation numerically is most commonly done through discretization schemes such as the finite-difference method, in which the spatial and temporal derivatives of the equations are approximated on a grid. Accurately capturing the frequency content and spatial detail required for realistic wave propagation demands high computational power and, in particular, large amounts of memory. While the computation performed at each grid point is simple, many such points need to be updated over many iterations to satisfy the numerical stability conditions required to produce accurate results.
 
@@ -7,17 +8,11 @@ As a result, researchers and industry participants rely on HPC datacenters and t
 
 One major application of this kind of modeling that is commonly performed with parallelization is in the oil and gas industry. To characterize the subsurface and locate oil and gas reservoirs, pressure is generated at the surface, and the resulting waves traveling through the ground or water are recorded. From these measurements, an approximate model of the subsurface is constructed. Forward modeling is then run on that model to simulate the resulting wave propagation, and the outcome is compared against the actual measurements to assess how closely the model matches reality.
 
-To ground this in a concrete case, the numerical scheme and parallelization strategy examined in this work are applied to the Marmousi2#cite(<martin2006>) model, a widely used subsurface model derived from a profile of the North Quenguela trough in the Kwanza Basin, Angola. The goal of our computation is to visualize how a wave travels through this model, displaying the velocity of the medium resulting from a pressure wave injected at the surface.
+To ground this in a concrete case, the numerical scheme and parallelization strategy examined in this work are applied to the Marmousi2#cite(<martin2006>) model, a widely used subsurface model. The goal of our computation is to visualize how a wave travels through this model, displaying the velocity of the medium resulting from a pressure wave injected at the surface.
 
-The remainder of this paper is structured as follows: we first describe
-the numerical scheme used for forward modeling and explain how it can be
-implemented sequentially, after which we detail how the domain is
-decomposed and parallelized using MPI and OpenMP. We then present
-performance results obtained on an HPC cluster, examining how the
-implementation scales with an increasing number of processes and cores.
-Finally, we will discuss these results and potential future work.
+The remainder of this paper is structured as follows. @Background introduces the Marmousi2 model, the elastodynamic wave equation and its discretization, and the staggering and tiling techniques that motivate the design of both the sequential and parallel implementations. @Methodology describes how the sequential solver is structured and how the parallelization strategy using MPI and OpenMP is designed on top of it. @Implementation shows how this design is realized concretely in code for both the sequential and parallel versions. @Results presents performance measurements obtained on an HPC cluster, including strong and weak scaling behavior, the effect of tiling and output compression, and a trace-based analysis using Vampir. Finally, @Discussion interprets these results, identifies their limiting factors, and discusses directions for future work.
 
-= Background
+= Background <Background>
 == Marmousi2 Model
 Marmousi2#cite(<martin2006>) is an updated version of the original 1988 Marmousi#cite(<versteeg1994>)
 model. Its structure is based on the North Quenguela Trough in
@@ -512,7 +507,7 @@ A second, separate effect appears once many cores are active simultaneously. Unl
 
 This work applies tiling in an attempt to reduce both of these two effects. The grid is divided into many small tiles instead of computing the entire field in one pass. For each tile, stress is computed first, and immediately afterward, before moving on to another tile whose values would push these ones out of the cache, the corresponding velocity values are computed for that same tile while its stress values are still resident. Only once both fields have been fully advanced for one tile does the computation proceed to the next. In this way, the same round trip to main memory that would otherwise be required twice for every value, once to write it, once to read it back after it has been evicted, is reduced to a single round trip, since each value is consumed again while still cheap to access.
 
-= Methodology
+= Methodology <Methodology>
 == Output
 
 The primary output of the simulation is the vertical particle velocity $v_z$ at every grid point, saved at regular intervals throughout the run. Each saved frame is visualized using Matplotlib, rendering $v_z$ as a 2D image over the model domain. Since these frames are saved at fixed intervals, they can be assembled in sequence into a video, producing an animation of the wave as it propagates outward from the source and interacts with the structure of the Marmousi2 model.
@@ -1138,7 +1133,7 @@ The bottom row and rightmost column are handled differently as well. Their stres
 
 As was outlined in the MPI section, the stress values of the rightmost column and the bottom row are computed separately, and so are the velocity values of the leftmost column and the top row. These are parallelized with `#pragma omp for simd` for the single full row shared between both points (the bottom row for stress, the top row for velocity), combining thread-level and SIMD parallelism even for this thin strip, and with a plain `#pragma omp for` for the remaining column, which is split across threads point by point instead of being vectorized, since its access pattern is too irregular to benefit from SIMD. This ensures that every stage of the timestep, not just the interior, makes use of the available cores, even though the potential speedup is naturally much smaller here given how little work these strips represent relative to the interior.
 
-= Implementation
+= Implementation <Implementation>
 
 == Setup
 *Hardware.* All experiments were run on nodes equipped with Intel Xeon Platinum 8468 ("Sapphire Rapids") processors, with 48 cores per socket and two sockets per node, giving 96 cores per node in total.
@@ -1383,7 +1378,7 @@ for (int i = iz0; i < last_i; ++i) {
 }
 ```
 
-= Results
+= Results <Results>
 == Wave Propagation Data
 The program successfully produced the data required to animate the seismic wave forward modeling. Figures @swfm-1, @swfm-2 and @swfm-3 display three select frames taken from the final animation.
 
@@ -1675,7 +1670,7 @@ Each rank clearly operates on its own independent rhythm of long and short compu
 
 With Gzip compression, kernel execution pauses for approximately 2.75s, whereas with LZ4 using Blosc the pause is shorter, at approximately 0.22s. The Score-P trace did not capture the Blosc compression routines themselves, so their parallel execution could not be visualized.
 
-= Discussion
+= Discussion <Discussion>
 == Analysis and Bottleneck
 
 The sequential run, using the full resolution grid with no downsampling and 50000 iterations, took 12374 seconds. The fastest parallel run, using 10 nodes with 96 cores each (a 960 fold increase in compute resources), took 203 seconds. This corresponds to a speedup of 61 times, a significant improvement, but only a fraction of the 960 fold increase in resources, yielding a parallel efficiency of 6.4%.
